@@ -1,0 +1,2196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pixel Puzzle</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #000;
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  canvas {
+    display: block;
+    background: #111;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    max-width: 100vw;
+    max-height: 100vh;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="720" height="1280"></canvas>
+<script>
+
+
+(() => {
+  'use strict';
+
+  // ---------------------------------------------------------------------------
+  // Small HTML5 port for the provided AS3 game.
+  // This intentionally does NOT port all of Flixel.
+  // It only implements the pieces used by this game.
+  // Method names and most field names from the original Game class are kept.
+  // ---------------------------------------------------------------------------
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  const FLASH = true;
+  const AIR = false;
+  const WIN = false;
+  const LEFT = 1 << 1;
+  const RIGHT = 1 << 2;
+  const TOP = 1 << 3;
+  const BOTTOM = 1 << 4;
+  const HCENTER = 1 << 5;
+  const VCENTER = 1 << 6;
+  const BITMAPFONT = true;
+  const MISSING_IMAGE_W = 16;
+  const MISSING_IMAGE_H = 16;
+  const MISSING_IMAGE_COLOR = '#ff66cc';
+
+  const MAXAI = 100;
+  const MAXLEVEL = 5;
+  const MAXHINT = 9;
+  const MAXU = 15;
+  const MAXV = 15;
+  const MAP_NONE = 0;
+  const MAP_FULL = 1;
+  const MAP_EMPTY = 2;
+  const MAP_FULL2 = 3;
+  const MAP_EMPTY2 = 4;
+  const HND_END = -1;
+  const HND_PEN = -2;
+  const HND_CROSS = -3;
+  const HND_ERASE = -4;
+  const CLEARWAIT = 60 * 6;
+  const MAXUNDOSTATES = 128;
+
+  // ---------------------------------------------------------------------------
+  // Minimal input helpers.
+  // ---------------------------------------------------------------------------
+  class InputState {
+    constructor() {
+      this.down = new Set();
+      this.justPressed = new Set();
+      this.justReleased = new Set();
+      this.mouse = {
+        x: 0,
+        y: 0,
+        pressed: false,
+        justPressed: false,
+        justReleased: false
+      };
+    }
+
+    beginFrame() {
+      this.justPressed.clear();
+      this.justReleased.clear();
+      this.mouse.justPressed = false;
+      this.mouse.justReleased = false;
+    }
+
+    normalizeKey(key) {
+      const map = {
+        ' ': 'SPACE',
+        'Spacebar': 'SPACE',
+        'Enter': 'ENTER',
+        'Escape': 'ESCAPE',
+        'ArrowLeft': 'LEFT',
+        'ArrowRight': 'RIGHT',
+        'ArrowUp': 'UP',
+        'ArrowDown': 'DOWN',
+        'PageUp': 'PAGEUP',
+        'PageDown': 'PAGEDOWN',
+        'Home': 'HOME',
+        'End': 'END'
+      };
+      if (map[key]) return map[key];
+      if (/^F\d+$/i.test(key)) return key.toUpperCase();
+      if (key.length === 1) return key.toUpperCase();
+      return key.toUpperCase();
+    }
+
+    install(canvas) {
+      window.addEventListener('keydown', (e) => {
+        Audio.unlock();
+        const k = this.normalizeKey(e.key);
+        if (!this.down.has(k)) this.justPressed.add(k);
+        this.down.add(k);
+        if ([
+          'SPACE', 'LEFT', 'RIGHT', 'UP', 'DOWN', 'ENTER', 'ESCAPE',
+          'PAGEUP', 'PAGEDOWN', 'HOME', 'END'
+        ].includes(k)) e.preventDefault();
+      });
+
+      window.addEventListener('keyup', (e) => {
+        const k = this.normalizeKey(e.key);
+        if (this.down.has(k)) this.justReleased.add(k);
+        this.down.delete(k);
+      });
+
+      const updateMouse = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        this.mouse.x = (e.clientX - rect.left) * scaleX;
+        this.mouse.y = (e.clientY - rect.top) * scaleY;
+      };
+
+      canvas.addEventListener('mousemove', updateMouse);
+      canvas.addEventListener('touchstart', (e) => {
+        Audio.unlock();
+      }, { passive: true });
+      canvas.addEventListener('mousedown', (e) => {
+        Audio.unlock();
+        updateMouse(e);
+        if (!this.mouse.pressed) this.mouse.justPressed = true;
+        this.mouse.pressed = true;
+      });
+      window.addEventListener('mouseup', (e) => {
+        updateMouse(e);
+        if (this.mouse.pressed) this.mouse.justReleased = true;
+        this.mouse.pressed = false;
+      });
+    }
+
+    keyPressed(k) {
+      return this.down.has(k.toUpperCase());
+    }
+
+    keyJustPressed(k) {
+      return this.justPressed.has(k.toUpperCase());
+    }
+
+    pressed(k) {
+      return this.keyPressed(k);
+    }
+  }
+
+  const input = new InputState();
+  input.install(canvas);
+
+  // ---------------------------------------------------------------------------
+  // Tiny Random port.
+  // ---------------------------------------------------------------------------
+  class Random {
+    constructor(Seed = 1) {
+      this.seed = Seed || 1;
+    }
+    setSeed(Seed) {
+      this.seed = Seed || 1;
+    }
+    rand(n) {
+      return n === 0 ? 0 : this.nextInt() % n;
+    }
+    nextInt() {
+      return this.gen();
+    }
+    nextDouble() {
+      return this.gen() / 2147483647;
+    }
+    gen() {
+      this.seed = (this.seed * 16807) % 2147483647;
+      return this.seed;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tiny sprite helper.
+  // ---------------------------------------------------------------------------
+  class FlxSprite {
+    constructor() {
+      this.x = 0;
+      this.y = 0;
+      this.width = 0;
+      this.height = 0;
+      this.frame = 0;
+      this.frames = 1;
+      this.frameWidth = 0;
+      this.frameHeight = 0;
+      this.alpha = 1;
+      this.visible = true;
+      this.exists = true;
+      this.scale = { x: 1, y: 1 };
+      this.offset = { x: 0, y: 0 };
+      this.angle = 0;
+      this.color = 0xffffff;
+      this.image = null;
+      this.imageLoaded = false;
+      this.loadFinished = false;
+      this.sourceName = '';
+      this.placeholderKind = 'rect';
+      this.customDraw = null;
+    }
+
+    loadGraphic(name, animated = false, reverse = false, width = 0, height = 0) {
+      this.sourceName = name;
+      const img = new Image();
+      img.onload = () => {
+        this.imageLoaded = true;
+        this.loadFinished = true;
+        this.image = img;
+        if (width > 0 && height > 0) {
+          this.frameWidth = width;
+          this.frameHeight = height;
+          this.width = width;
+          this.height = height;
+          const cols = Math.max(1, Math.floor(img.width / width));
+          const rows = Math.max(1, Math.floor(img.height / height));
+          this.frames = Math.max(1, cols * rows);
+        } else {
+          this.frameWidth = img.width;
+          this.frameHeight = img.height;
+          this.width = img.width;
+          this.height = img.height;
+          this.frames = 1;
+        }
+      };
+      img.onerror = () => {
+        this.imageLoaded = false;
+        this.loadFinished = true;
+        this.image = null;
+        if (width > 0 && height > 0) {
+          this.frameWidth = width;
+          this.frameHeight = height;
+          this.width = width;
+          this.height = height;
+          this.frames = 2;
+        } else {
+          this.width = this.width || 64;
+          this.height = this.height || 64;
+          this.frameWidth = this.width;
+          this.frameHeight = this.height;
+          this.frames = 1;
+        }
+      };
+      img.src = name;
+
+      if (width > 0 && height > 0) {
+        this.frameWidth = width;
+        this.frameHeight = height;
+        this.width = width;
+        this.height = height;
+      }
+      return this;
+    }
+
+    createGraphic(w, h, color) {
+      this.width = w;
+      this.height = h;
+      this.frameWidth = w;
+      this.frameHeight = h;
+      this.frames = 1;
+      this.loadFinished = true;
+      this.placeholderKind = 'solid';
+      this.graphicColor = color;
+      return this;
+    }
+
+    render() {
+      if (!this.visible || !this.exists) return;
+      Game._drawSpriteRaw(this);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Very small audio helper.
+  // ---------------------------------------------------------------------------
+  class AudioHandle {
+    constructor(src, loop) {
+      this.src = src;
+      this.loop = loop;
+      this.audio = null;
+      this.playing = false;
+      this.volume = 1;
+      try {
+        this.audio = new window.Audio(src);
+        this.audio.preload = 'auto';
+        this.audio.loop = loop;
+        this.audio.addEventListener('ended', () => {
+          this.playing = false;
+        });
+      } catch (e) {
+        this.audio = null;
+      }
+    }
+    play() {
+      if (!this.audio) return Promise.resolve(false);
+      this.audio.loop = this.loop;
+      this.audio.volume = this.volume;
+      try {
+        this.audio.currentTime = 0;
+      } catch (e) {}
+      let p;
+      try {
+        p = this.audio.play();
+      } catch (e) {
+        this.playing = false;
+        return Promise.resolve(false);
+      }
+      if (p && typeof p.then === 'function') {
+        return p.then(() => {
+          this.playing = true;
+          return true;
+        }).catch(() => {
+          this.playing = false;
+          return false;
+        });
+      }
+      this.playing = true;
+      return Promise.resolve(true);
+    }
+    stop() {
+      if (!this.audio) return;
+      try {
+        this.audio.pause();
+        this.audio.currentTime = 0;
+      } catch (e) {}
+      this.playing = false;
+    }
+    pause() {
+      if (!this.audio) return;
+      try { this.audio.pause(); } catch (e) {}
+    }
+  }
+
+  class AudioSystem {
+    constructor() {
+      this.sfx = [];
+      this.sfxperm = [];
+      this.bgm = [];
+      this.mute = false;
+      this.paused = false;
+      this.userInteracted = false;
+      this.pendingBgm = null;
+      this.bgmRequested = null;
+    }
+    unlock() {
+      this.userInteracted = true;
+      if (this.pendingBgm && !this.mute) {
+        const s = this.pendingBgm;
+        this.pendingBgm = null;
+        s.stop();
+        const r = s.play();
+        if (r && typeof r.then === 'function') {
+          r.then((ok) => {
+            if (!ok && !this.mute) this.pendingBgm = s;
+          }).catch(() => {
+            if (!this.mute) this.pendingBgm = s;
+          });
+        }
+      }
+    }
+    loadsfx(src) {
+      const r = new AudioHandle(src, false);
+      this.sfx.push(r);
+      this.sfxperm.push(false);
+      return r;
+    }
+    loadbgm(src) {
+      const r = new AudioHandle(src, true);
+      this.bgm.push(r);
+      return r;
+    }
+    setvol(s, v) {
+      if (!s) return;
+      s.volume = v / 100.0;
+      if (s.audio) s.audio.volume = s.volume;
+    }
+    setvolbgmall(v) {
+      for (const s of this.bgm) this.setvol(s, this.mute ? 0 : v);
+    }
+    setvolsfxall(v) {
+      for (let i = 0; i < this.sfx.length; i++) {
+        if (!this.sfxperm[i]) this.setvol(this.sfx[i], v);
+      }
+    }
+    stopall() {
+      this.paused = false;
+      this.pendingBgm = null;
+      this.bgmRequested = null;
+      for (const s of this.sfx) s.stop();
+      for (const s of this.bgm) s.stop();
+    }
+    stopbgmall() {
+      this.pendingBgm = null;
+      this.bgmRequested = null;
+      for (const s of this.bgm) s.stop();
+    }
+    pauseall(b) {
+      if (this.paused === b) return;
+      this.paused = b;
+      if (b) {
+        for (const s of this.sfx) s.pause();
+        for (const s of this.bgm) s.pause();
+      } else {
+        for (const s of this.bgm) {
+          if (s.playing && s.audio) {
+            const p = s.audio.play();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+          }
+        }
+      }
+    }
+    play(s) {
+      if (!s) return;
+      const isBgm = this.bgm.indexOf(s) >= 0;
+      if (this.mute && isBgm) return;
+      if (isBgm) {
+        this.bgmRequested = s;
+        this.pendingBgm = s;
+      }
+      s.stop();
+      const r = s.play();
+      if (isBgm && r && typeof r.then === 'function') {
+        r.then((ok) => {
+          if (ok) {
+            if (this.pendingBgm === s) this.pendingBgm = null;
+          } else if (!this.mute) {
+            this.pendingBgm = s;
+          }
+        }).catch(() => {
+          if (!this.mute) this.pendingBgm = s;
+        });
+      } else if (isBgm) {
+        this.pendingBgm = null;
+      }
+    }
+    stop(s) {
+      if (s) s.stop();
+    }
+    isplaying(s) {
+      return !!(s && s.audio && !s.audio.paused && !s.audio.ended);
+    }
+  }
+
+  const Audio = new AudioSystem();
+
+  // ---------------------------------------------------------------------------
+  // Small FlxG subset.
+  // ---------------------------------------------------------------------------
+  const FlxG = {
+    width: canvas.width,
+    height: canvas.height,
+    fullscreen: false,
+    debug: false,
+    framerate: 60,
+    mouse: {
+      justPressed: () => input.mouse.justPressed,
+      justReleased: () => input.mouse.justReleased,
+      pressed: () => input.mouse.pressed,
+      get x() { return input.mouse.x; },
+      get y() { return input.mouse.y; }
+    },
+    keys: {
+      justPressed: (k) => input.keyJustPressed(k),
+      pressed: (k) => input.keyPressed(k)
+    },
+    resetInput: () => {
+      input.justPressed.clear();
+      input.justReleased.clear();
+      input.mouse.justPressed = false;
+      input.mouse.justReleased = false;
+    },
+    setFullScreen: (b) => {
+      FlxG.fullscreen = b;
+      if (b && document.fullscreenElement !== canvas) {
+        if (canvas.requestFullscreen) canvas.requestFullscreen().catch(() => {});
+      } else if (!b && document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Common base.
+  // ---------------------------------------------------------------------------
+  class Common {}
+  Common.rang = new Random(1);
+
+  // ---------------------------------------------------------------------------
+  // Game port.
+  // ---------------------------------------------------------------------------
+  class Game extends Common {
+    constructor() {
+      super();
+
+      // Asset names kept close to original Embed names.
+      this.ressndmusic0 = 'music0.mp3';
+      this.ressndmusic1 = 'music1.mp3';
+      this.ressndmusic2 = 'music2.mp3';
+      this.ressndmusic3 = 'music3.mp3';
+      this.ressndmusic4 = 'music4.mp3';
+      this.ressndmusic5 = 'music5.mp3';
+      this.ressndhit = 'hit.mp3';
+      this.ressndback = 'back.mp3';
+      this.ressndselect = 'select.mp3';
+      this.ressndstart = 'start.mp3';
+      this.ressndrowcol = 'rowcol.mp3';
+      this.ressndfull = 'full.mp3';
+      this.ressndpause = 'pause.mp3';
+      this.ressndtool = 'tool.mp3';
+      this.ressndcross = 'cross.mp3';
+      this.ressnderase = 'erase.mp3';
+      this.ressndundo = 'undo.mp3';
+      this.ressndclear = 'clear.mp3';
+
+      // Sprites.
+      this.cursor = null; this.bgm = null; this.font1 = null; this.splash = null; this.bg = null; this.grid = null; this.empty = null; this.full = null;
+      this.blank = null; this.btnpen = null; this.btncross = null; this.btnerase = null; this.font2 = null; this.font = null; this.strike = null;
+      this.focus = null; this.focus2 = null; this.focus3 = null; this.watch = null; this.bg2 = null; this.btnstart = null; this.title = null;
+      this.legal = null; this.ground = null; this.bgred = null; this.ship = null; this.ship2 = null; this.ship3 = null; this.ship4 = null;
+      this.full2 = null; this.empty2 = null; this.hand = null; this.btnundo = null; this.btnredo = null; this.btnpause = null; this.btnhint = null;
+      this.puzclear = null; this.blank2 = null; this.font3 = null; this.hints = null; this.digits = null; this.digits1 = null; this.digits2 = null;
+      this.buttons = null;
+
+      this.aiimg = new Array(MAXAI).fill(null);
+      this.ait = new Array(MAXAI).fill(0);
+      this.aip = new Array(MAXAI).fill(0);
+      this.aic = new Array(MAXAI).fill(0);
+      this.aim = new Array(MAXAI).fill(0);
+      this.aif = new Array(MAXAI).fill(0);
+      this.aix = new Array(MAXAI).fill(0);
+      this.aiy = new Array(MAXAI).fill(0);
+      this.aia = new Array(MAXAI).fill(0);
+      this.aifr = new Array(MAXAI).fill(0);
+      this.aisf = new Array(MAXAI).fill(0);
+      this.aimf = new Array(MAXAI).fill(0);
+      this.aidx = new Array(MAXAI).fill(0);
+      this.aidy = new Array(MAXAI).fill(0);
+      this.aiox = new Array(MAXAI).fill(0);
+      this.aioy = new Array(MAXAI).fill(0);
+      this.aifm = new Array(MAXAI).fill(0);
+      this.aiff = new Array(MAXAI).fill(0);
+      this.order = new Array(MAXAI).fill(0);
+
+      this.debug = false; this.ismute = false; this.issplash = false;
+      this.cleared = false; this.drawing = false; this.tutorial = false;
+      this.wasspace = false; this.wasenter = false; this.skipspace = false; this.skipenter = false;
+
+      this.bgmidx = 0; this.level = 1; this.cu = 0; this.cv = 0; this.shipt = 0;
+      this.MU = 0; this.MV = 0; this.MW = 0; this.MH = 0; this.tool = MAP_FULL; this.timer = 0;
+      this.hintidx = MAP_NONE; this.handidx = MAP_NONE; this.handf = 0; this.penf = 0; this.crossf = 0;
+      this.clearf = 0; this.gloss = 0; this.glossf = 0; this.hintnum = MAXHINT + 1;
+
+      this.map = new Array(MAXU * MAXV).fill(MAP_NONE);
+            this.undoStack = new Array(MAXUNDOSTATES * MAXU * MAXV).fill(MAP_NONE);
+      this.redoStack = new Array(MAXUNDOSTATES * MAXU * MAXV).fill(MAP_NONE);
+      this.undoCount = 0;
+      this.redoCount = 0;
+
+      this.fonttab = new Array(256).fill(0);
+      this.videohack = 0;
+      this.SW = 720; this.SH = 1280; this.frame = 0; this.scene = 0;
+
+      this.SCENE_NONE = 0;
+      this.SCENE_SPLASH = 1;
+      this.SCENE_MENU = 2;
+      this.SCENE_GAME = 3;
+
+      this.strtab = [
+        '',
+        'Select the Pen tool',
+        'Select the Cross tool',
+        'Start by filling in the spaces\nthat already have a solution.',
+        'This solves where the position of the 1 square is for column 1. Mark determined empty spaces with X.',
+        'We now can solve where the group of 4 squares is positioned in row 3.',
+        'If there are groups of squares, there must be at least 1 empty square between them.',
+        'This column will need a space between the groups of 1 and 3 squares.',
+        'This will determine where the group of 3 squares will be filled.',
+        'This column also has a 1 and 3. Repeat the same steps as before.',
+        'It will be easier to solve the puzzle if you place X marks on known empty spaces.',
+        'After filling all corresponding squares, pixel art is completed and you can clear the puzzle.',
+        '',
+        'The puzzles are solved \nby coloring squares. \nSelect the pen tool.',
+        'Good! Numbers are clues \nthat show how many squares \nyou have to paint. Try it!',
+        'Every number represents a \nsequence.With one square \nalready filled, there is \nonly one solution left.',
+        'Okay! If there is more \nthan one number, there \nmust be at least one blank \nsquare between each sequence.',
+        'Order is important too. \nThe order for the colored \nsquares is the same as the \norder in which the numbers \nappear.',
+        'Let\'s focus on the columns, \nnumbers show the same squares. \nPlease select the cross tool.',
+        'Okay! Now look at the \ncolumns, mark the squares \nthat you know are blank \nwith crosses.',
+        'Correct! Now there is \nonly one possible solution \nleft. Please slect the \npen tool!',
+        'Congrats, the tutorial \nis completed! Continue \nsolving the other puzzles...',
+        ''
+      ];
+      this.MAXSTR = this.strtab.length;
+
+      this.leveltab = [
+        '',
+        '#####' + '####.' + '##.##' + '#.###' + '..#..',
+        '..##.' + '.#..#' + '.####' + '#####' + '..##.',
+        '.#.#.' + '#.#.#' + '#...#' + '.#.#.' + '..#..',
+        '..#..' + '.#.#.' + '.###.' + '#####' + '#...#',
+        '##.##' + '#...#' + '.#.#.' + '.#.#.' + '#...#'
+      ];
+
+      this.colortab = [
+        0x000000,0x000000,0x000000,0x000000,0x000000,
+        0x000000,0x000000,0x000000,0x000000,0x000000,
+        0x000000,0x000000,0x000000,0x000000,0x000000,
+        0x000000,0x000000,0x000000,0x000000,0x000000,
+        0x000000,0x000000,0x000000,0x000000,0x000000,
+
+        0x3A9D00,0x3A9D00,0x2F7F14,0x3A9D00,0x2E8B00,
+        0x2E8B00,0x8B6500,0x3A9D00,0x8B6500,0xE94F4F,
+        0x3A9D00,0x8B6500,0xE94F4F,0x8B6500,0x3A9D00,
+        0x2E8B00,0x87AEDA,0x8B6500,0x8B6500,0x2F7F14,
+        0x87AEDA,0x87AEDA,0x8B6500,0x87AEDA,0x87AEDA,
+
+        0x16ACE2,0x16ACE2,0xF2F391,0xF2F391,0x16ACE2,
+        0x16ACE2,0xF2F391,0xFFFFFF,0xFFFFFF,0xF2E400,
+        0x16ACE2,0xF2F391,0xF2E400,0xF2E400,0xF2CC00,
+        0xF2F391,0xF2E400,0xF2E400,0xF2CC00,0xE7A600,
+        0x16ACE2,0x16ACE2,0xF263FF,0xF200FF,0x16ACE2,
+
+        0x000000,0xF01414,0x000000,0xFF6061,0x000000,
+        0xF01414,0xF01414,0xFF6061,0xFFFFFF,0xFF6061,
+        0xF01414,0xF01414,0xF01414,0xFF6061,0xF01414,
+        0x000000,0xF01414,0xF01414,0xF01414,0x000000,
+        0x000000,0x000000,0xF01414,0x000000,0x000000,
+
+        0x000000,0x000000,0xE01010,0x000000,0x000000,
+        0x000000,0xE01010,0xFFFF00,0xE01010,0x000000,
+        0x000000,0xE01010,0xE01010,0xE01010,0x000000,
+        0xFFFF00,0xE01010,0xE01010,0xE01010,0xFFFF00,
+        0xFFFF00,0x0000D0,0x0000D0,0x0000D0,0xFFFF00,
+
+        0x66CC00,0x66CC00,0xFF33CC,0x66CC00,0x66CC00,
+        0x66CC00,0xFFFFFF,0xFFFFFF,0xFFFFFF,0x66CC00,
+        0xFFFFFF,0x000000,0xE6B488,0x000000,0xFFFFFF,
+        0xFFFFFF,0x000000,0xE6B488,0x000000,0xFFFFFF,
+        0x66CC00,0xFFFFFF,0xFFFFFF,0xFFFFFF,0x66CC00
+      ];
+
+      this.handtab0 = [HND_PEN, HND_END];
+      this.handtab1 = [0, 0, 4, 0, -1];
+      this.handtab2 = [1, 1, 3, 1, -1];
+      this.handtab3 = [0, 2, 1, 2, 3, 2, 4, 2, -1];
+      this.handtab4 = [0, 3, 2, 3, 4, 3, -1];
+      this.handtab5 = [HND_CROSS, HND_END];
+      this.handtab6 = [4, 1, 2, 2, 1, 3, 0, 4, 1, 4, 3, 4, 4, 4, -1];
+      this.handtab7 = [HND_PEN, HND_END];
+      this.handtab8 = [2, 4, -1];
+      this.handtab = [];
+
+      this.nonogramRowClues = new Array(MAXU).fill(0);
+      this.nonogramColClues = new Array(MAXV).fill(0);
+    }
+
+    static colorToCss(n, alpha = 1) {
+      const r = (n >> 16) & 255;
+      const g = (n >> 8) & 255;
+      const b = n & 255;
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+
+    static _prepareseed() {
+      Common.rang.setSeed((Date.now() % 2147483646) + 1);
+    }
+
+    static _rnd(n) {
+      return Common.rang.rand(n);
+    }
+
+    resetai(i) {
+      this.aiimg[i] = null;
+      this.ait[i] = this.aix[i] = this.aiy[i] = this.aidx[i] = this.aidy[i] = 0;
+    }
+
+    initai() {
+      for (let i = 0; i < 100; i++) this.resetai(i);
+    }
+
+    initship() {
+      let r = this.shipt;
+      this.shipt = (this.shipt + 1) % 4;
+
+      if (r === 0) { this.aiimg[0] = this.ship; this.aidx[0] = 7; }
+      if (r === 1) { this.aiimg[0] = this.ship2; this.aidx[0] = 6; }
+      if (r === 2) { this.aiimg[0] = this.ship3; this.aidx[0] = 5; }
+      if (r === 3) { this.aiimg[0] = this.ship4; this.aidx[0] = 4; }
+
+      this.ait[0] = r;
+      this.aix[0] = -(this.aiimg[0] ? this.aiimg[0].width : 0);
+      this.aiy[0] = this.SH / 2 - this.SH / 4 + Game._rnd((this.SH / 4 * 2) | 0);
+
+      if ((r === 1 || r === 3) && Game._rnd(2) === 0) {
+        this.aix[0] = this.SW + (this.aiimg[0] ? this.aiimg[0].width : 0);
+        this.aidx[0] = -this.aidx[0];
+        this.aiimg[0].scale.x = -1;
+      } else if (this.aiimg[0]) {
+        this.aiimg[0].scale.x = 1;
+      }
+    }
+
+    updatemenu() {
+      this.aix[0] += this.aidx[0];
+      this.aiy[0] += this.aidy[0];
+      if (this.aix[0] > (this.SW * 1.5) || this.aix[0] < -(this.SW * 1.5)) this.initship();
+    }
+
+    drawmenu() {
+      let y = this.aiy[0];
+      if (this.ait[0] === 3) y += Math.sin(this.frame / 20.0) * 60;
+      if (this.ait[0] === 2) y += Math.sin(this.frame / 20.0) * 30;
+      Game._drawImage(this.aiimg[0], this.aix[0], y, LEFT | BOTTOM);
+    }
+
+    createSpriteWithPlaceholder(name, w, h, kind) {
+      const s = new FlxSprite().loadGraphic(name, false, false, w, h);
+      s.width = w;
+      s.height = h;
+      s.frameWidth = w;
+      s.frameHeight = h;
+      s.placeholderKind = kind || 'rect';
+      return s;
+    }
+
+    createSpriteWithPlaceholderAuto(name, w, h, kind) {
+      const s = new FlxSprite().loadGraphic(name);
+      s.placeholderKind = kind || 'rect';
+      if (!s.imageLoaded) {
+        s.width = w;
+        s.height = h;
+        s.frameWidth = w;
+        s.frameHeight = h;
+      }
+      return s;
+    }
+
+    loadgfx() {
+      // Placeholders are used automatically when same-dir files are missing.
+      this.cursor = this.createSpriteWithPlaceholder('cursor.png', 24, 24, 'cursor');
+      this.font1 = this.createSpriteWithPlaceholder('font1.png', 24, 24, 'font');
+      this.font2 = this.createSpriteWithPlaceholder('font2.png', 20, 38, 'font');
+      this.font3 = this.createSpriteWithPlaceholder('font3.png', 8, 18, 'font');
+      this.digits1 = this.createSpriteWithPlaceholder('digits1.png', 38, 20, 'digits');
+      this.digits2 = this.createSpriteWithPlaceholder('digits2.png', 18, 8, 'digits');
+      this.bgm = this.createSpriteWithPlaceholder('bgm.png', 72, 96, 'speaker');
+      this.splash = this.createSpriteWithPlaceholder('splash.png', this.SW, this.SH, 'splash');
+      this.bg = this.createSpriteWithPlaceholder('bg.png', this.SW, this.SH, 'bg');
+      this.bg2 = this.createSpriteWithPlaceholder('bg2.png', this.SW, this.SH, 'bg2');
+      this.bgred = this.createSpriteWithPlaceholder('bgred.png', this.SW, this.SH, 'bgred');
+      this.grid = this.createSpriteWithPlaceholder('grid.png', 450, 450, 'grid');
+      this.empty = this.createSpriteWithPlaceholder('empty.png', 90, 90, 'cellEmpty');
+      this.empty2 = this.createSpriteWithPlaceholder('empty2.png', 90, 90, 'cellCross');
+      this.full = this.createSpriteWithPlaceholder('full.png', 90, 90, 'cellFull');
+      this.full2 = this.createSpriteWithPlaceholder('full2.png', 90, 90, 'cellFull2');
+      this.strike = this.createSpriteWithPlaceholderAuto('strike.png', 48, 48, 'strike');
+      this.focus = this.createSpriteWithPlaceholder('focus.png', 92, 92, 'focus');
+      this.focus2 = this.createSpriteWithPlaceholder('focus2.png', 92, 92, 'focus');
+      this.focus3 = this.createSpriteWithPlaceholder('focus3.png', 92, 92, 'focus');
+      this.btnpen = this.createSpriteWithPlaceholder('btnpen.png', 120, 120, 'btnPen');
+      this.btncross = this.createSpriteWithPlaceholder('btncross.png', 120, 120, 'btnCross');
+      this.btnerase = this.createSpriteWithPlaceholder('btnerase.png', 120, 120, 'btnErase');
+      this.btnstart = this.createSpriteWithPlaceholder('btnstart.png', 242, 172, 'btnStart');
+      this.btnundo = this.createSpriteWithPlaceholder('btnundo.png', 154, 76, 'btnUndo');
+      this.btnredo = this.createSpriteWithPlaceholder('btnredo.png', 154, 76, 'btnRedo');
+      this.btnpause = this.createSpriteWithPlaceholder('btnpause.png', 67, 67, 'btnPause');
+      this.btnhint = this.createSpriteWithPlaceholder('btnhint.png', 155, 73, 'btnHint');
+      this.buttons = this.createSpriteWithPlaceholder('buttons.png', 32, 32, 'buttons');
+      this.title = this.createSpriteWithPlaceholderAuto('title.png', 760, 260, 'title');
+      this.legal = this.createSpriteWithPlaceholderAuto('legal.png', 620, 40, 'legal');
+      this.ground = this.createSpriteWithPlaceholder('ground.png', this.SW, 180, 'ground');
+      this.ship = this.createSpriteWithPlaceholder('ship.png', 220, 90, 'ship');
+      this.ship2 = this.createSpriteWithPlaceholder('ship2.png', 220, 90, 'ship');
+      this.ship3 = this.createSpriteWithPlaceholder('ship3.png', 220, 90, 'ship');
+      this.ship4 = this.createSpriteWithPlaceholder('ship4.png', 220, 90, 'ship');
+      this.hand = this.createSpriteWithPlaceholderAuto('hand.png', 40, 40, 'hand');
+      this.puzclear = this.createSpriteWithPlaceholderAuto('puzclear.png', 420, 90, 'clear');
+      this.blank = new FlxSprite().createGraphic(90, 90, 0xffffffff); this.blank.placeholderKind = 'solidWhite';
+      this.blank2 = new FlxSprite().createGraphic(90, 90, 0xffffffff); this.blank2.placeholderKind = 'solidWhite';
+      this.watch = new FlxSprite().createGraphic(160, 38, 0x00000000); this.watch.angle = -90; this.watch.x = 315; this.watch.y = 22;
+      this.hints = new FlxSprite().createGraphic(16, 18, 0x00000000); this.hints.angle = -90; this.hints.x = 235; this.hints.y = 10;
+
+      this.bgm.x = this.SW - this.bgm.width;
+      this.grid.x = (this.SW - this.grid.width) / 2;
+      this.grid.y = 82 + ((968 - this.grid.height) / 2) + 4;
+      this.btnerase.x = 531; this.btnerase.y = 1148;
+      this.btncross.x = 243; this.btncross.y = 1153;
+      this.btnpen.x = 88; this.btnpen.y = 1148;
+      this.btnstart.x = (this.SW - this.btnstart.width) / 2; this.btnstart.y = (this.SH - this.btnstart.height) / 2;
+      this.btnundo.x = 360; this.btnundo.y = 1060;
+      this.btnredo.x = 532; this.btnredo.y = 1060;
+      this.btnpause.x = 15; this.btnpause.y = 8;
+      this.btnhint.x = 97; this.btnhint.y = 2;
+      this.watch.x = 315; this.watch.y = 22;
+      this.hints.x = 235; this.hints.y = 10;
+
+      this.font = this.font1;
+      this.digits = this.digits1;
+    }
+
+    loadsounds() {
+      this.sndmusic0 = Audio.loadbgm(this.ressndmusic0);
+      this.sndmusic1 = Audio.loadbgm(this.ressndmusic1);
+      this.sndmusic2 = Audio.loadbgm(this.ressndmusic2);
+      this.sndmusic3 = Audio.loadbgm(this.ressndmusic3);
+      this.sndmusic4 = Audio.loadbgm(this.ressndmusic4);
+      this.sndmusic5 = Audio.loadbgm(this.ressndmusic5);
+      this.sndhit = Audio.loadsfx(this.ressndhit);
+      this.sndback = Audio.loadsfx(this.ressndback);
+      this.sndselect = Audio.loadsfx(this.ressndselect);
+      this.sndstart = Audio.loadsfx(this.ressndstart);
+      this.sndrowcol = Audio.loadsfx(this.ressndrowcol);
+      this.sndfull = Audio.loadsfx(this.ressndfull);
+      this.sndpause = Audio.loadsfx(this.ressndpause);
+      this.sndtool = Audio.loadsfx(this.ressndtool);
+      this.sndcross = Audio.loadsfx(this.ressndcross);
+      this.snderase = Audio.loadsfx(this.ressnderase);
+      this.sndundo = Audio.loadsfx(this.ressndundo);
+      this.sndclear = Audio.loadsfx(this.ressndclear);
+      Audio.setvolbgmall(2);
+      Audio.setvolsfxall(50);
+    }
+
+    inittext() {
+      for (let i = 0; i < 256; i++) this.fonttab[i] = 0;
+      for (let i = '0'.charCodeAt(0); i <= '9'.charCodeAt(0); i++) this.fonttab[i] = 30 + i - '0'.charCodeAt(0);
+      for (let i = 'a'.charCodeAt(0); i <= 'z'.charCodeAt(0); i++) this.fonttab[i] = 2 + i - 'a'.charCodeAt(0);
+      for (let i = 'A'.charCodeAt(0); i <= 'Z'.charCodeAt(0); i++) this.fonttab[i] = 2 + i - 'A'.charCodeAt(0);
+      this.fonttab[' '.charCodeAt(0)] = 1;
+      this.fonttab['!'.charCodeAt(0)] = 40;
+      this.fonttab['?'.charCodeAt(0)] = 41;
+      this.fonttab[':'.charCodeAt(0)] = 42;
+      this.fonttab[','.charCodeAt(0)] = 43;
+      this.fonttab['.'.charCodeAt(0)] = 44;
+      this.fonttab['\''.charCodeAt(0)] = 48;
+    }
+
+    resetinput() {
+      FlxG.resetInput();
+    }
+
+    create3() {
+      this.inittext();
+      this.loadsounds();
+      this.loadgfx();
+      this.initlevel();
+      this.initmenu();
+      if (this.issplash) this.scene = this.SCENE_MENU;
+      else this.scene = this.SCENE_GAME;
+    }
+
+    create2() {
+      Game._prepareseed();
+      this.frame = 0;
+      this.SW = FlxG.width;
+      this.SH = FlxG.height;
+      this.splash = this.createSpriteWithPlaceholder('splash.png', this.SW, this.SH, 'splash');
+      this.bgred = this.createSpriteWithPlaceholder('bgred.png', this.SW, this.SH, 'bgred');
+      this.issplash = false;
+      this.ismute = true;
+      this.bgmidx = 0;
+      this.shipt = 0;
+      this.level = 1;
+      this.hintnum = MAXHINT + 1;
+      this.tutorial = false;
+      this.wasspace = false;
+      this.wasenter = false;
+      this.skipspace = false;
+      this.skipenter = false;
+      Audio.mute = this.ismute;
+      this.splash.alpha = 1;
+      this.bgred.alpha = 1;
+      if (!this.issplash) this.create3();
+    }
+
+    areAssetsReady() {
+      const required = [
+        this.bg, this.bg2, this.bgred, this.grid,
+        this.empty, this.empty2, this.full, this.full2,
+        this.focus, this.focus2, this.focus3, this.strike,
+        this.btnpen, this.btncross, this.btnerase,
+        this.btnundo, this.btnredo, this.btnpause, this.btnhint,
+        this.btnstart, this.bgm, this.title, this.legal,
+        this.ground, this.ship, this.ship2, this.ship3, this.ship4,
+        this.hand, this.puzclear, this.font1, this.font2, this.font3,
+        this.digits1, this.digits2, this.splash
+      ];
+
+      for (const s of required) {
+        if (!s) return false;
+        if (s.sourceName && !s.loadFinished) return false;
+      }
+      return true;
+    }
+
+    setmusic() {
+      const oldidx = this.bgmidx;
+      for (let i = 0; i < 100; i++) {
+        this.bgmidx = Game._rnd(6);
+        if (this.bgmidx !== oldidx) break;
+      }
+      this.startmusic();
+    }
+
+    currentbgm() {
+      switch (this.bgmidx) {
+        case 0: return this.sndmusic0;
+        case 1: return this.sndmusic1;
+        case 2: return this.sndmusic2;
+        case 3: return this.sndmusic3;
+        case 4: return this.sndmusic4;
+        case 5: return this.sndmusic5;
+      }
+      return null;
+    }
+
+    startmusic() {
+      Audio.stopall();
+      if (Audio.mute) return;
+      const s = this.currentbgm();
+      if (s) Audio.play(s);
+    }
+
+    toggleSound() {
+      Audio.mute = !Audio.mute;
+      Audio.setvolbgmall(Audio.mute ? 0 : 2);
+      if (Audio.mute) Audio.stopbgmall(); else this.startmusic();
+    }
+
+    initlevel() {
+      this.resetinput();
+      this.skipspace = true;
+      for (let i = 0; i < MAXU * MAXV; i++) this.map[i] = MAP_NONE;
+      this.undoCount = 0;
+      this.redoCount = 0;
+      this.MU = 5;
+      this.MV = 5;
+      this.MW = 90;
+      this.MH = 90;
+      this.cu = (this.MU / 2) | 0;
+      this.cv = (this.MV / 2) | 0;
+      this.timer = 0;
+      this.gloss = 0;
+      this.penf = 0;
+      this.crossf = 0;
+      this.clearf = 0;
+      this.glossf = 0;
+      this.hintidx = MAP_NONE;
+      this.handidx = MAP_NONE;
+      this.handf = 0;
+      this.handtab = this.handtab0.slice();
+      this.sethint();
+      this.tutorial = this.level === 1;
+      if (this.tutorial) this.tool = MAP_EMPTY; else this.tool = MAP_FULL;
+      this.btnundo.frame = 0;
+      this.btnredo.frame = 0;
+      this.btnpause.frame = 0;
+      this.btnhint.frame = this.hintnum > 0 ? 0 : 2;
+      this.blank.alpha = 0;
+      this.cleared = false;
+      this.drawing = false;
+      this.btnerase.frame = this.tool === 0 ? 1 : 0;
+      this.btncross.frame = this.tool === 2 ? 1 : 0;
+      this.btnpen.frame = this.tool === 1 ? 1 : 0;
+      this.setmusic();
+    }
+
+    initmenu() {
+      this.initai();
+      this.initship();
+    }
+
+    sethint() {
+      this.handf = 0;
+      this.handidx = MAP_NONE;
+      if (this.hintidx === 0) { this.handtab = this.handtab0.slice(); }
+      if (this.hintidx === 1) { this.handtab = this.handtab1.slice(); for (let i = 0; i < 5; i++) this.map[i + this.MU * 0] = 3; }
+      if (this.hintidx === 2) { this.handtab = this.handtab2.slice(); this.map[0 + this.MU * 1] = 1; for (let i = 1; i < 4; i++) this.map[i + this.MU * 1] = 3; }
+      if (this.hintidx === 3) { this.handtab = this.handtab3.slice(); for (let i = 0; i < 2; i++) { this.map[0 + i + this.MU * 2] = 3; this.map[3 + i + this.MU * 2] = 3; } }
+      if (this.hintidx === 4) { this.handtab = this.handtab4.slice(); this.map[0 + this.MU * 3] = 3; for (let i = 0; i < 3; i++) this.map[2 + i + this.MU * 3] = 3; }
+      if (this.hintidx === 5) { this.handtab = this.handtab5.slice(); }
+      if (this.hintidx === 6) {
+        this.handtab = this.handtab6.slice();
+        this.map[4 + this.MU * 1] = 4; this.map[2 + this.MU * 2] = 4; this.map[1 + this.MU * 3] = 4;
+        this.map[0 + this.MU * 4] = 4; this.map[1 + this.MU * 4] = 4; this.map[3 + this.MU * 4] = 4; this.map[4 + this.MU * 4] = 4;
+      }
+      if (this.hintidx === 7) { this.handtab = this.handtab7.slice(); }
+      if (this.hintidx === 8) { this.handtab = this.handtab8.slice(); this.map[2 + this.MU * 4] = 3; }
+      if (this.hintidx === 9) { this.handtab = this.handtab8.slice(); }
+    }
+
+    overlapgeneral(t1x, t1y, w1x, w1y, t2x, t2y, w2x, w2y) {
+      w1x -= 1; w1y -= 1; w2x -= 1; w2y -= 1;
+      if (t1x < t2x) {
+        if (t2x - t1x > w1x) return false;
+        if (t1y < t2y) return !(t2y - t1y > w1y);
+        return !(t1y - t2y > w2y);
+      }
+      if (t1x - t2x > w2x) return false;
+      if (t1y < t2y) return !(t2y - t1y > w1y);
+      return !(t1y - t2y > w2y);
+    }
+
+    overlap(s1, s2) {
+      if (!s1 || !s2) return false;
+      if (!s1.exists || !s2.exists) return false;
+      return this.overlapgeneral(
+        s1.x - s1.offset.x, s1.y - s1.offset.y, s1.width, s1.height,
+        s2.x - s2.offset.x, s2.y - s2.offset.y, s2.width, s2.height
+      );
+    }
+
+    static _drawImage(img, x, y, anc) {
+      if (!img) return;
+      let dx = x;
+      let dy = y;
+      if (anc !== 0) {
+        const w = img.width;
+        const h = img.height;
+        if ((anc & VCENTER) !== 0) dy -= h >> 1;
+        else if ((anc & BOTTOM) !== 0) dy -= h;
+        if ((anc & HCENTER) !== 0) dx -= w >> 1;
+        else if ((anc & RIGHT) !== 0) dx -= w;
+      }
+      const oldx = img.x, oldy = img.y;
+      img.x = dx;
+      img.y = dy;
+      img.render();
+      img.x = oldx;
+      img.y = oldy;
+    }
+
+    static _drawSpriteRaw(img) {
+      ctx.save();
+      ctx.globalAlpha = img.alpha;
+      ctx.translate(img.x, img.y);
+      if (img.scale.x !== 1 || img.scale.y !== 1) ctx.scale(img.scale.x, img.scale.y);
+      if (img.angle) ctx.rotate(img.angle * Math.PI / 180);
+
+      if (img.image && img.imageLoaded) {
+          const fw = img.frameWidth || img.width || img.image.width;
+          const fh = img.frameHeight || img.height || img.image.height;
+          const frame = Math.min(img.frame, Math.max(0, img.frames - 1));
+          const sheetWidth = img.image.width;
+          const cols = Math.max(1, Math.floor(sheetWidth / fw));
+          let sx = frame * fw;
+          let sy = 0;
+          if (sx >= sheetWidth) {
+            sy = Math.floor(sx / sheetWidth) * fh;
+            sx = sx % sheetWidth;
+          } else {
+            sy = Math.floor(frame / cols) * fh;
+            sx = (frame % cols) * fw;
+          }
+          ctx.drawImage(img.image, sx, sy, fw, fh, 0, 0, img.width, img.height);
+      } else if (img.sourceName) {
+        Game.drawMissingImageSprite(img);
+      } else if (img.customDraw) {
+        img.customDraw(ctx, img);
+      } else {
+        Game.drawPlaceholderSprite(img);
+      }
+      ctx.restore();
+    }
+
+
+    static drawMissingImageSprite(img) {
+      ctx.fillStyle = MISSING_IMAGE_COLOR;
+      ctx.fillRect(0, 0, MISSING_IMAGE_W, MISSING_IMAGE_H);
+    }
+
+    static drawPlaceholderSprite(img) {
+      const w = img.width || 64;
+      const h = img.height || 64;
+      const kind = img.placeholderKind || 'rect';
+      const frame = img.frame || 0;
+      const colors = {
+        bg: '#1c2342', bg2: '#24386d', bgred: '#8c1228', grid: '#d8c59b',
+        cellEmpty: '#e9dcc0', cellCross: '#e7dcc8', cellFull: '#333', cellFull2: '#444',
+        focus: '#ffffff', ship: '#91d6ff', title: '#ffe167', legal: '#f7f7f7',
+        btnPen: frame ? '#f3d04f' : '#786a2f', btnCross: frame ? '#87d7ff' : '#2f5f75',
+        btnErase: frame ? '#ff8d8d' : '#7b4343', btnStart: '#83de7f', btnUndo: frame === 2 ? '#f6d96a' : frame ? '#9bc5ff' : '#4e5c73',
+        btnRedo: frame === 2 ? '#f6d96a' : frame ? '#9bc5ff' : '#4e5c73', btnPause: frame ? '#ffe38a' : '#61739a',
+        btnHint: frame === 2 ? '#554' : frame ? '#ffe38a' : '#9f7cff', hand: '#fff3cb', clear: '#fff59e', speaker: '#ddd'
+      };
+
+      if (kind === 'solid') {
+        ctx.fillStyle = 'rgba(255,255,255,0)';
+        ctx.fillRect(0, 0, w, h);
+        return;
+      }
+
+      if (kind === 'bg') {
+        const g = ctx.createLinearGradient(0, 0, 0, h);
+        g.addColorStop(0, '#1c2342');
+        g.addColorStop(1, '#12172e');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, w, h);
+        return;
+      }
+
+      if (kind === 'bg2') {
+        const g = ctx.createLinearGradient(0, 0, 0, h);
+        g.addColorStop(0, '#20315e');
+        g.addColorStop(1, '#5b87db');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, w, h);
+        return;
+      }
+
+      if (kind === 'bgred') {
+        ctx.fillStyle = '#9c1027';
+        ctx.fillRect(0, 0, w, h);
+        return;
+      }
+
+      if (kind === 'grid') {
+        ctx.fillStyle = '#cfb98b';
+        ctx.fillRect(0, 0, w, h);
+        ctx.strokeStyle = '#7a6338';
+        ctx.lineWidth = 4;
+        for (let i = 0; i <= 5; i++) {
+          ctx.beginPath(); ctx.moveTo(i * (w / 5), 0); ctx.lineTo(i * (w / 5), h); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(0, i * (h / 5)); ctx.lineTo(w, i * (h / 5)); ctx.stroke();
+        }
+        return;
+      }
+
+      if (kind === 'cellEmpty' || kind === 'cellCross' || kind === 'cellFull' || kind === 'cellFull2' || kind === 'solidWhite') {
+        if (kind === 'solidWhite') {
+          ctx.fillStyle = Game.colorToCss(img.color != null ? img.color : 0xffffff);
+          ctx.fillRect(0, 0, w, h);
+          return;
+        }
+        ctx.fillStyle = kind === 'cellEmpty' ? '#eadfca' : (kind === 'cellFull' || kind === 'cellFull2' ? '#222' : '#eadfca');
+        ctx.fillRect(0, 0, w, h);
+        ctx.strokeStyle = '#8f7c56';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(0, 0, w, h);
+        if (kind === 'cellCross') {
+          ctx.strokeStyle = '#8a5c41';
+          ctx.lineWidth = 6;
+          ctx.beginPath(); ctx.moveTo(18, 18); ctx.lineTo(w - 18, h - 18); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(w - 18, 18); ctx.lineTo(18, h - 18); ctx.stroke();
+        }
+        return;
+      }
+
+      if (kind === 'focus') {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 5;
+        ctx.strokeRect(0, 0, w, h);
+        return;
+      }
+
+      if (kind === 'strike') {
+        ctx.strokeStyle = '#b9dfff';
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+        return;
+      }
+
+      if (kind === 'ship') {
+        ctx.fillStyle = '#b6ecff';
+        ctx.beginPath();
+        ctx.ellipse(w / 2, h / 2, w / 2.4, h / 3.2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#1c3e52';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        return;
+      }
+
+      if (kind === 'ground') {
+        ctx.fillStyle = '#5d3c1f';
+        ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = '#7e5728';
+        for (let i = 0; i < 18; i++) ctx.fillRect(i * 80, 0, 40, h);
+        return;
+      }
+
+      if (kind === 'title') {
+        ctx.fillStyle = '#0000';
+        ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = '#ffe679';
+        ctx.font = 'bold 68px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        return;
+      }
+
+      if (kind === 'legal') {
+        ctx.fillStyle = '#fff';
+        ctx.font = '20px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        return;
+      }
+
+      if (kind === 'clear') {
+        ctx.fillStyle = '#fff9ad';
+        ctx.fillRect(0, 0, w, h);
+        ctx.strokeStyle = '#5b5215';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(0, 0, w, h);
+        ctx.fillStyle = '#443';
+        ctx.font = 'bold 40px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        return;
+      }
+
+      if (kind === 'speaker') {
+        ctx.fillStyle = '#1a1a1a88';
+        ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = frame ? '#a33' : '#ddd';
+        ctx.beginPath();
+        ctx.moveTo(18, 40); ctx.lineTo(30, 40); ctx.lineTo(48, 24); ctx.lineTo(48, 72); ctx.lineTo(30, 56); ctx.lineTo(18, 56); ctx.closePath();
+        ctx.fill();
+        if (frame) {
+          ctx.strokeStyle = '#f88';
+          ctx.lineWidth = 4;
+          ctx.beginPath(); ctx.moveTo(52, 24); ctx.lineTo(68, 72); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(68, 24); ctx.lineTo(52, 72); ctx.stroke();
+        } else {
+          ctx.strokeStyle = '#ddd';
+          ctx.lineWidth = 4;
+          ctx.beginPath(); ctx.arc(50, 48, 14, -0.8, 0.8); ctx.stroke();
+          ctx.beginPath(); ctx.arc(50, 48, 24, -0.8, 0.8); ctx.stroke();
+        }
+        return;
+      }
+
+      if (kind.startsWith('btn')) {
+        ctx.fillStyle = colors[kind] || '#555';
+        ctx.fillRect(0, 0, w, h);
+        ctx.strokeStyle = '#111';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(0, 0, w, h);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 28px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        return;
+      }
+
+      if (kind === 'hand') {
+        ctx.fillStyle = '#fff2c4';
+        ctx.beginPath();
+        ctx.arc(w / 2, h / 2, Math.min(w, h) / 2.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#5a4c30';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        return;
+      }
+
+      ctx.fillStyle = colors[kind] || '#777';
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = '#000';
+      ctx.strokeRect(0, 0, w, h);
+    }
+
+    drawtext(s, x, y, anc, col = 0xffffff) {
+      if (!BITMAPFONT) {
+        const lines = String(s).split('\n');
+        const fontSize = this.font === this.font2 ? 32 : (this.font === this.font3 ? 18 : 24);
+        const lineHeight = this.font === this.font2 ? 38 : (this.font === this.font3 ? 18 : 24);
+        let yy = y;
+        const totalh = lineHeight * lines.length;
+        if (anc & BOTTOM) yy -= totalh;
+        if (anc & VCENTER) yy -= totalh / 2;
+        ctx.save();
+        ctx.fillStyle = Game.colorToCss(col);
+        ctx.font = `bold ${fontSize}px Arial`;
+        ctx.textBaseline = 'top';
+        for (const line of lines) {
+          const m = ctx.measureText(line);
+          let xx = x;
+          if (anc & HCENTER) xx -= m.width / 2;
+          if (anc & RIGHT) xx -= m.width;
+          ctx.fillText(line, xx, yy);
+          yy += lineHeight + 1;
+        }
+        ctx.restore();
+        return;
+      }
+
+      const tabw = new Array(MAXAI).fill(0);
+      const tabx = new Array(MAXAI).fill(0);
+      let x2 = x - 0;
+      let y2 = y - 0;
+      let l = 0;
+      let c = 0;
+      s = String(s);
+
+      for (let i = 0; i < s.length; i++) {
+        const ch = s.charCodeAt(i);
+        if (ch === 10) {
+          tabw[c++] = l;
+          l = 0;
+        } else {
+          if (ch === '~'.charCodeAt(0)) l += this.font.width / 4;
+          else if (ch === '#'.charCodeAt(0)) l += this.font.width / 3;
+          l += this.font.width;
+        }
+      }
+      tabw[c++] = l;
+
+      for (let i = 0; i < c; i++) {
+        tabx[i] = x2;
+        if (anc & HCENTER) tabx[i] -= tabw[i] / 2;
+        if (anc & RIGHT) tabx[i] -= tabw[i];
+      }
+
+      if (anc & BOTTOM) y2 -= this.font.height * c;
+      if (anc & VCENTER) y2 -= this.font.height * c / 2;
+
+      c = 0;
+      x2 = tabx[c++];
+      this.font.color = col;
+      for (let i = 0; i < s.length; i++) {
+        const ch = s.charCodeAt(i);
+        if (ch === 10) {
+          x2 = tabx[c++];
+          y2 += this.font.height + 1;
+          continue;
+        }
+        this.font.x = x2;
+        this.font.y = y2;
+        this.font.frame = this.fonttab[ch] || 0;
+        if (ch === '#'.charCodeAt(0)) x2 -= this.font.width / 1.5;
+        else if (ch === ' '.charCodeAt(0)) {}
+        else if (ch === '~'.charCodeAt(0)) {}
+        else Game._drawImage(this.font, this.font.x, this.font.y, LEFT | TOP);
+
+        if (ch === '~'.charCodeAt(0)) x2 += this.font.width / 4;
+        else x2 += this.font.width;
+      }
+      this.font.color = 0xffffff;
+    }
+
+    _drawtext2(s, x, y, anc, col = 0xfffff0) {
+      const t = 2;
+      this.drawtext(s, x - t, y, anc, 0x202020);
+      this.drawtext(s, x + t, y, anc, 0x202020);
+      this.drawtext(s, x, y - t, anc, 0x202020);
+      this.drawtext(s, x, y + t, anc, 0x202020);
+      this.drawtext(s, x, y, anc, col);
+    }
+
+    drawtext2(s, x, y, anc, col = 0xfffff0) {
+      this._drawtext2(s, x, y, anc, col);
+    }
+
+    drawtextRotated(s, x, y, angle = 0, col = 0xffffff, fontSize = 24) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle * Math.PI / 180);
+      ctx.fillStyle = Game.colorToCss(col);
+      ctx.font = `bold ${fontSize}px Arial`;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      const lines = String(s).split('\n');
+      const lineHeight = Math.round(fontSize * 1.1);
+      for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], 0, i * lineHeight);
+      ctx.restore();
+    }
+
+    drawdigits(s, x, y, anc) {
+      if (!BITMAPFONT) {
+        const text = String(s);
+        const fontSize = this.digits === this.digits2 ? 18 : 28;
+        const lineHeight = this.digits === this.digits2 ? 18 : 28;
+        ctx.save();
+        ctx.font = `bold ${fontSize}px Arial`;
+        const width = ctx.measureText('0').width + 4;
+        let count = 0;
+        for (const ch of text) if ((ch >= '0' && ch <= '9') || ch === ':') count++;
+        let x2 = x;
+        let y2 = y;
+        const totalh = lineHeight * count;
+        if (anc !== 0) {
+          if ((anc & VCENTER) !== 0) y2 -= totalh >> 1;
+          else if ((anc & BOTTOM) !== 0) y2 -= totalh;
+          if ((anc & HCENTER) !== 0) x2 -= width >> 1;
+          else if ((anc & RIGHT) !== 0) x2 -= width;
+        }
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        for (let i = text.length - 1; i >= 0; i--) {
+          const ch = text[i];
+          if ((ch >= '0' && ch <= '9') || ch === ':') {
+            ctx.fillText(ch, x2, y2);
+            y2 += lineHeight;
+          }
+        }
+        ctx.restore();
+        return;
+      }
+
+      let x2 = x;
+      let y2 = y;
+      let count = 0;
+      let frameidx;
+      let ch;
+      const w = this.digits.width;
+      const h = this.digits.height;
+      const len = String(s).length;
+      let totalh = 0;
+      s = String(s);
+
+      for (let i = 0; i < len; i++) {
+        ch = s.charCodeAt(i);
+        if ((ch >= '0'.charCodeAt(0) && ch <= '9'.charCodeAt(0)) || ch === ':'.charCodeAt(0)) count++;
+      }
+
+      totalh = h * count;
+      if (anc !== 0) {
+        if ((anc & VCENTER) !== 0) y2 -= totalh >> 1;
+        else if ((anc & BOTTOM) !== 0) y2 -= totalh;
+        if ((anc & HCENTER) !== 0) x2 -= w >> 1;
+        else if ((anc & RIGHT) !== 0) x2 -= w;
+      }
+
+      for (let i = len - 1; i >= 0; i--) {
+        ch = s.charCodeAt(i);
+        frameidx = -1;
+        if (ch >= '0'.charCodeAt(0) && ch <= '9'.charCodeAt(0)) frameidx = ch - '0'.charCodeAt(0);
+        else if (ch === ':'.charCodeAt(0)) frameidx = 10;
+        if (frameidx >= 0) {
+          this.digits.frame = frameidx;
+          Game._drawImage(this.digits, x2, y2, LEFT | TOP);
+          y2 += h;
+        }
+      }
+    }
+
+    drawClock() {
+
+      const t = (this.timer / 60) | 0;
+      const s = t % 60;
+      const m = ((t / 60) | 0) % 60;
+      const h = (t / 3600) | 0;
+      const ss = (s < 10 ? '0' : '') + s;
+      const mm = (m < 10 ? '0' : '') + m;
+      const hh = (h < 10 ? '0' : '') + h;
+      this.font = this.font2;
+      this.drawtext(hh + ':' + mm + ':' + ss, this.watch.x, this.watch.y, LEFT | TOP);
+      this.font = this.font1;
+    }
+
+    drawHints() {
+      this.font = this.font3;
+      this.drawtext(String(this.hintnum), this.hints.x, this.hints.y, HCENTER | TOP);
+      this.font = this.font1;
+    }
+
+    buildCluesFromSolution(isRow, line) {
+      const out = [];
+      let run = 0;
+      const lineLen = isRow ? this.MU : this.MV;
+      for (let i = 0; i < lineLen; i++) {
+        const n = isRow ? line * this.MU + i : i * this.MU + line;
+        if (this.leveltab[this.level][n] === '#') run++;
+        else if (run > 0) { out.push(run); run = 0; }
+      }
+      if (run > 0) out.push(run);
+      if (out.length === 0) out.push(0);
+      return out;
+    }
+
+    buildCluesFromMap(isRow, line) {
+      const out = [];
+      let run = 0;
+      const lineLen = isRow ? this.MU : this.MV;
+      let solved = true;
+      for (let i = 0; i < lineLen; i++) {
+        const n = isRow ? line * this.MU + i : i * this.MU + line;
+        const filled = this.map[n];
+        const sol = this.leveltab[this.level][n];
+        if (filled === 1) run++;
+        else {
+          if (run > 0) { out.push(run); run = 0; }
+          if (filled !== 1 && sol === '#') solved = false;
+        }
+        if (filled === 1 && sol !== '#') solved = false;
+      }
+      if (run > 0) out.push(run);
+      return { clues: out, solved };
+    }
+
+    drawNonogramNumbers() {
+      const oldFont = this.font;
+      this.font = this.font2;
+      for (let v = 0; v < this.MV; v++) {
+        const clue = this.buildCluesFromSolution(true, v);
+        const actual = this.buildCluesFromMap(true, v);
+        let solved = actual.solved && actual.clues.length === clue.length;
+        if (solved) {
+          for (let i = 0; i < clue.length; i++) if (actual.clues[i] !== clue[i]) solved = false;
+        }
+        for (let i = 0; i < clue.length; i++) {
+          let prefixSolved = true;
+          if (i >= actual.clues.length) prefixSolved = false;
+          else {
+            for (let k = 0; k < i; k++) if (actual.clues[k] !== clue[k]) prefixSolved = false;
+            if (prefixSolved && actual.clues[i] !== clue[i]) prefixSolved = false;
+          }
+          const x = this.grid.x - 20 - 10 - (clue.length - 1 - i) * 40;
+          const y = this.grid.y + v * this.MH + this.MH / 2;
+          this.drawtext(String(clue[i]), x, y, HCENTER | VCENTER, prefixSolved ? 0xc8f0ff : 0xffffff);
+          if (solved) Game._drawImage(this.strike, x, y, HCENTER | VCENTER);
+        }
+      }
+      for (let u = 0; u < this.MU; u++) {
+        const clue = this.buildCluesFromSolution(false, u);
+        const actual = this.buildCluesFromMap(false, u);
+        let solved = actual.solved && actual.clues.length === clue.length;
+        if (solved) {
+          for (let i = 0; i < clue.length; i++) if (actual.clues[i] !== clue[i]) solved = false;
+        }
+        for (let i = 0; i < clue.length; i++) {
+          let prefixSolved = true;
+          if (i >= actual.clues.length) prefixSolved = false;
+          else {
+            for (let k = 0; k < i; k++) if (actual.clues[k] !== clue[k]) prefixSolved = false;
+            if (prefixSolved && actual.clues[i] !== clue[i]) prefixSolved = false;
+          }
+          const x = this.grid.x + u * this.MW + this.MW / 2;
+          const y = this.grid.y - 20 - (clue.length - 1 - i) * (this.font2.height + 6);
+          this.drawtext(String(clue[i]), x, y, HCENTER | BOTTOM, prefixSolved ? 0xc8f0ff : 0xffffff);
+          if (solved) Game._drawImage(this.strike, x, y - this.font2.height / 2, HCENTER | VCENTER);
+        }
+      }
+      this.font = oldFont;
+    }
+
+    autoFillEmptyLine(isRow, line) {
+      const lineLen = isRow ? this.MU : this.MV;
+      const clueRuns = [];
+      const groupRuns = [];
+      let run = 0;
+      for (let i = 0; i < lineLen; i++) {
+        const n = isRow ? line * this.MU + i : i * this.MU + line;
+        if (this.leveltab[this.level][n] === '#') run++;
+        else if (run > 0) { clueRuns.push(run); run = 0; }
+      }
+      if (run > 0) clueRuns.push(run);
+
+      run = 0;
+      for (let i = 0; i < lineLen; i++) {
+        const n = isRow ? line * this.MU + i : i * this.MU + line;
+        if (this.map[n] === 1) run++;
+        else if (run > 0) { groupRuns.push(run); run = 0; }
+      }
+      if (run > 0) groupRuns.push(run);
+
+      let canClose = groupRuns.length === clueRuns.length;
+      if (canClose) {
+        for (let i = 0; i < clueRuns.length; i++) if (groupRuns[i] !== clueRuns[i]) canClose = false;
+      }
+      if (!canClose) return;
+      for (let i = 0; i < lineLen; i++) {
+        const n = isRow ? line * this.MU + i : i * this.MU + line;
+        if (this.map[n] === 0) this.map[n] = 2;
+      }
+    }
+
+    autoFillEmptyAt(u, v) {
+      this.autoFillEmptyLine(true, v);
+      this.autoFillEmptyLine(false, u);
+    }
+
+    pushUndoState() {
+      let count = this.MU * this.MV;
+      if (count <= 0) return;
+      if (count > MAXU * MAXV) count = MAXU * MAXV;
+      let base;
+      if (this.undoCount < MAXUNDOSTATES) {
+        base = this.undoCount * MAXU * MAXV;
+        this.undoCount++;
+      } else {
+        for (let state = 1; state < MAXUNDOSTATES; state++) {
+          for (let j = 0; j < MAXU * MAXV; j++) {
+            this.undoStack[(state - 1) * MAXU * MAXV + j] = this.undoStack[state * MAXU * MAXV + j];
+          }
+        }
+        base = (MAXUNDOSTATES - 1) * MAXU * MAXV;
+      }
+      for (let i = 0; i < count; i++) this.undoStack[base + i] = this.map[i];
+      for (let i = count; i < MAXU * MAXV; i++) this.undoStack[base + i] = MAP_NONE;
+      this.redoCount = 0;
+    }
+
+    doUndo() {
+      let count = this.MU * this.MV;
+      if (this.undoCount <= 0) return;
+      if (count > MAXU * MAXV) count = MAXU * MAXV;
+      let redoBase;
+      if (this.redoCount < MAXUNDOSTATES) {
+        redoBase = this.redoCount * MAXU * MAXV;
+        this.redoCount++;
+      } else {
+        for (let state = 1; state < MAXUNDOSTATES; state++) {
+          for (let j = 0; j < MAXU * MAXV; j++) {
+            this.redoStack[(state - 1) * MAXU * MAXV + j] = this.redoStack[state * MAXU * MAXV + j];
+          }
+        }
+        redoBase = (MAXUNDOSTATES - 1) * MAXU * MAXV;
+      }
+      for (let i = 0; i < count; i++) this.redoStack[redoBase + i] = this.map[i];
+      for (let i = count; i < MAXU * MAXV; i++) this.redoStack[redoBase + i] = MAP_NONE;
+      this.undoCount--;
+      const undoBase = this.undoCount * MAXU * MAXV;
+      for (let i = 0; i < count; i++) this.map[i] = this.undoStack[undoBase + i];
+    }
+
+    doRedo() {
+      let count = this.MU * this.MV;
+      if (this.redoCount <= 0) return;
+      if (count > MAXU * MAXV) count = MAXU * MAXV;
+      let undoBase;
+      if (this.undoCount < MAXUNDOSTATES) {
+        undoBase = this.undoCount * 15 * 15;
+        this.undoCount++;
+      } else {
+        for (let state = 1; state < MAXUNDOSTATES; state++) {
+          for (let j = 0; j < MAXU * MAXV; j++) {
+            this.undoStack[(state - 1) * MAXU * MAXV + j] = this.undoStack[state * MAXU * MAXV + j];
+          }
+        }
+        undoBase = (MAXUNDOSTATES - 1) * 15 * 15;
+      }
+      for (let i = 0; i < count; i++) this.undoStack[undoBase + i] = this.map[i];
+      for (let i = count; i < MAXU * MAXV; i++) this.undoStack[undoBase + i] = MAP_NONE;
+      this.redoCount--;
+      const redoBase = this.redoCount * MAXU * MAXV;
+      for (let i = 0; i < count; i++) this.map[i] = this.redoStack[redoBase + i];
+    }
+
+    hasUndo() { return this.undoCount > 0; }
+    hasRedo() { return this.redoCount > 0; }
+
+    doHint() {
+      let candidateCount = 0;
+      const candidateKind = [];
+      const candidateLine = [];
+
+      for (let line = 0; line < this.MV; line++) {
+        let solved = true;
+        for (let i = 0; i < this.MU; i++) {
+          const n = line * this.MU + i;
+          if (this.leveltab[this.level][n] === '#') {
+            if (this.map[n] !== 1) { solved = false; break; }
+          } else {
+            if (this.map[n] !== 2) { solved = false; break; }
+          }
+        }
+        if (!solved) {
+          candidateKind[candidateCount] = 0;
+          candidateLine[candidateCount] = line;
+          candidateCount++;
+        }
+      }
+
+      for (let line = 0; line < this.MU; line++) {
+        let solved = true;
+        for (let i = 0; i < this.MV; i++) {
+          const n = i * this.MU + line;
+          if (this.leveltab[this.level][n] === '#') {
+            if (this.map[n] !== 1) { solved = false; break; }
+          } else {
+            if (this.map[n] !== 2) { solved = false; break; }
+          }
+        }
+        if (!solved) {
+          candidateKind[candidateCount] = 1;
+          candidateLine[candidateCount] = line;
+          candidateCount++;
+        }
+      }
+
+      if (candidateCount <= 0) return;
+      const pick = Game._rnd(candidateCount);
+      const kind = candidateKind[pick];
+      const line = candidateLine[pick];
+      this.pushUndoState();
+
+      if (kind === 0) {
+        const v = line;
+        for (let u = 0; u < this.MU; u++) {
+          const n = v * this.MU + u;
+          this.map[n] = this.leveltab[this.level][n] === '#' ? 1 : 2;
+        }
+      } else {
+        const u = line;
+        for (let v = 0; v < this.MV; v++) {
+          const n = v * this.MU + u;
+          this.map[n] = this.leveltab[this.level][n] === '#' ? 1 : 2;
+        }
+      }
+    }
+
+    clear() {
+      this.cleared = true;
+      this.clearf = this.frame;
+      Audio.stopall();
+      Audio.play(this.sndclear);
+    }
+
+    checkclear() {
+      if (this.cleared) return;
+      let b = true;
+      for (let i = 0; i < this.MU * this.MV; i++) {
+        if (this.map[i] !== 1 && this.map[i] !== 2) { b = false; break; }
+        if (this.map[i] === 1 && this.leveltab[this.level][i] !== '#') { b = false; break; }
+        if (this.map[i] === 2 && this.leveltab[this.level][i] !== '.') { b = false; break; }
+      }
+      if (b) this.clear();
+    }
+
+    checkhintclear() {
+      if (this.handtab[this.handidx] === -2) return this.tool === 1;
+      if (this.handtab[this.handidx] === -3) return this.tool === 2;
+      if (this.handtab[this.handidx] === -4) return this.tool === 0;
+      for (let i = 0; i < this.MU * this.MV; i++) if (this.map[i] === 3 || this.map[i] === 4) return false;
+      return true;
+    }
+
+    cellFromMouse() {
+      for (let v = 0; v < this.MV; v++) {
+        for (let u = 0; u < this.MU; u++) {
+          const x = this.grid.x + u * this.MW;
+          const y = this.grid.y + v * this.MH;
+          if (FlxG.mouse.x >= x && FlxG.mouse.x < x + this.MW && FlxG.mouse.y >= y && FlxG.mouse.y < y + this.MH) {
+            return { u, v, n: v * this.MU + u };
+          }
+        }
+      }
+      return null;
+    }
+
+    applyToolAt(u, v, n, firstPress) {
+      const tutorialAllowed = !this.tutorial ||
+        (this.tool === 1 && this.leveltab[this.level][n] === '#' && this.map[n] === 3) ||
+        (this.tool === 2 && this.leveltab[this.level][n] === '.' && this.map[n] === 4);
+
+      if (tutorialAllowed) {
+        if (!this.drawing) this.pushUndoState();
+        this.drawing = true;
+        this.map[n] = this.tool;
+      }
+
+      if (firstPress) {
+        if (this.tutorial && this.tool !== 1 && this.map[n] === 3) this.penf = 120;
+        if (this.tutorial && this.tool !== 2 && this.map[n] === 4) this.crossf = 120;
+      }
+
+      if (!this.tutorial) this.autoFillEmptyAt(u, v);
+      if (firstPress) {
+        if (this.tool === MAP_FULL) Audio.play(this.sndfull);
+        if (this.tool === 2) Audio.play(this.sndcross);
+        if (this.tool === 0) Audio.play(this.snderase);
+      }
+    }
+
+
+    ensureMenuMusic() {
+      if (Audio.mute) return;
+      let p = false;
+      switch (this.bgmidx) {
+        case 0: p = Audio.isplaying(this.sndmusic0); break;
+        case 1: p = Audio.isplaying(this.sndmusic1); break;
+        case 2: p = Audio.isplaying(this.sndmusic2); break;
+        case 3: p = Audio.isplaying(this.sndmusic3); break;
+        case 4: p = Audio.isplaying(this.sndmusic4); break;
+        case 5: p = Audio.isplaying(this.sndmusic5); break;
+      }
+      if (!p) this.startmusic();
+    }
+
+    update2() {
+      if (this.issplash) {
+        if (FlxG.keys.justPressed('ESCAPE')) {
+          try { window.close(); } catch (e) {}
+        }
+        if (FlxG.keys.justPressed('F')) FlxG.setFullScreen(!FlxG.fullscreen);
+        if (FlxG.keys.justPressed('M')) this.toggleSound();
+
+        this.bgred.alpha -= 0.05;
+        if (this.bgred.alpha < 0) this.bgred.alpha = 0;
+        if (this.frame === 60 * 2 || FlxG.keys.justPressed('ENTER') || FlxG.keys.justPressed('SPACE') || FlxG.mouse.justPressed()) {
+          this.skipspace = true;
+          this.skipenter = true;
+          this.create3();
+          this.issplash = false;
+          if (!Audio.mute) {
+            const s = this.currentbgm();
+            if (s) Audio.play(s);
+          }
+          this.ensureMenuMusic();
+        }
+
+        this.frame++;
+        return;
+      }
+
+      if (this.scene === this.SCENE_MENU) {
+        this.ensureMenuMusic();
+        if (FlxG.keys.justPressed('ESCAPE')) {
+          try { window.close(); } catch (e) {}
+        }
+        if (FlxG.keys.justPressed('F')) FlxG.setFullScreen(!FlxG.fullscreen);
+        if (FlxG.keys.justPressed('M')) this.toggleSound();
+
+        if (FlxG.mouse.justPressed()) {
+          if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.bgm.x, this.bgm.y, this.bgm.width, this.bgm.height)) this.toggleSound();
+        }
+
+        if (!FlxG.mouse.pressed()) this.btnstart.frame = 0;
+        if (FlxG.mouse.pressed()) {
+          if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnstart.x, this.btnstart.y, this.btnstart.width, this.btnstart.height)) this.btnstart.frame = 1;
+        }
+        if (FlxG.mouse.justReleased()) {
+          if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnstart.x, this.btnstart.y, this.btnstart.width, this.btnstart.height)) {
+            this.wasspace = false;
+            this.wasenter = false;
+            this.scene = this.SCENE_GAME;
+            this.setmusic();
+            Audio.play(this.sndstart);
+          }
+        }
+
+        if (FlxG.keys.pressed('ENTER')) {
+          if (!this.skipenter) {
+            this.btnstart.frame = 1;
+            this.wasenter = true;
+          }
+        } else {
+          this.skipenter = false;
+        }
+
+        if (FlxG.keys.pressed('SPACE')) {
+          if (!this.skipspace) {
+            this.btnstart.frame = 1;
+            this.wasspace = true;
+          }
+        } else {
+          this.skipspace = false;
+        }
+
+        if ((!FlxG.keys.pressed('SPACE') && this.wasspace && !this.skipspace) ||
+            (!FlxG.keys.pressed('ENTER') && this.wasenter && !this.skipenter)) {
+          this.wasspace = false;
+          this.wasenter = false;
+          this.scene = this.SCENE_GAME;
+          this.setmusic();
+          Audio.play(this.sndstart);
+        }
+
+        this.updatemenu();
+        this.frame++;
+        return;
+      }
+
+      if (FlxG.mouse.justPressed()) {
+        if (this.bgm && this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.bgm.x, this.bgm.y, this.bgm.width, this.bgm.height)) this.toggleSound();
+      }
+
+      if (!this.grid || !this.btnpen || !this.btncross || !this.btnerase || !this.btnundo || !this.btnredo || !this.btnpause || !this.btnhint) {
+        if (this.scene === this.SCENE_GAME && !this.cleared) this.timer++;
+        this.frame++;
+        return;
+      }
+
+      if (FlxG.keys.justPressed('ENTER')) {
+        if (this.cleared) this.frame = this.clearf + 60 * 6; else this.initlevel();
+      }
+      if (FlxG.keys.justPressed('ESCAPE')) { this.scene = this.SCENE_MENU; this.setmusic(); Audio.play(this.sndback); }
+      if (FlxG.keys.justPressed('F')) FlxG.setFullScreen(!FlxG.fullscreen);
+      if (FlxG.keys.justPressed('M')) this.toggleSound();
+      if (FlxG.keys.justPressed('PAGEDOWN')) { this.level = this.level < MAXLEVEL ? this.level + 1 : 1; this.initlevel(); }
+      if (FlxG.keys.justPressed('PAGEUP')) { this.level = this.level > 1 ? this.level - 1 : MAXLEVEL; this.initlevel(); }
+      if (FlxG.keys.justPressed('HOME')) { this.level = 1; this.initlevel(); }
+      if (FlxG.keys.justPressed('END')) { this.level = MAXLEVEL; this.initlevel(); }
+      if (FlxG.keys.justPressed('F12')) this.clear();
+      if (FlxG.keys.justPressed('H') && !this.tutorial && this.hintnum > 0) { this.doHint(); if (this.hintnum > 0) this.hintnum--; this.checkclear(); Audio.play(this.sndrowcol); }
+      if (FlxG.keys.justPressed('U') && !this.tutorial && this.hasUndo()) { this.doUndo(); this.btnundo.frame = this.hasUndo() ? 1 : 0; Audio.play(this.sndundo); }
+      if (FlxG.keys.justPressed('R') && !this.tutorial && this.hasRedo()) { this.doRedo(); this.btnredo.frame = this.hasRedo() ? 1 : 0; Audio.play(this.sndfull); }
+      if (FlxG.keys.justPressed('LEFT') && this.cu > 0) this.cu--;
+      if (FlxG.keys.justPressed('RIGHT') && this.cu < this.MU - 1) this.cu++;
+      if (FlxG.keys.justPressed('UP') && this.cv > 0) this.cv--;
+      if (FlxG.keys.justPressed('DOWN') && this.cv < this.MV - 1) this.cv++;
+      if (!FlxG.keys.pressed('SPACE')) this.skipspace = false;
+
+      if (!this.skipspace && FlxG.keys.pressed('SPACE')) {
+        if (this.cleared) {
+          if (FlxG.keys.justPressed('SPACE')) this.frame = this.clearf + 60 * 6;
+        } else {
+          const n = this.cv * this.MU + this.cu;
+          this.applyToolAt(this.cu, this.cv, n, FlxG.keys.justPressed('SPACE'));
+        }
+      }
+
+      if (FlxG.keys.justPressed('F1') || FlxG.keys.justPressed('P')) { this.tool = MAP_FULL; this.btnpen.frame = 1; this.btncross.frame = 0; this.btnerase.frame = 0; Audio.play(this.sndtool); }
+      if (FlxG.keys.justPressed('F2') || FlxG.keys.justPressed('X')) { this.tool = MAP_EMPTY; this.btnpen.frame = 0; this.btncross.frame = 1; this.btnerase.frame = 0; Audio.play(this.sndtool); }
+      if ((FlxG.keys.justPressed('F3') || FlxG.keys.justPressed('E')) && !this.tutorial) { this.tool = MAP_NONE; this.btnpen.frame = 0; this.btncross.frame = 0; this.btnerase.frame = 1; Audio.play(this.sndtool); }
+
+      if (this.hand && this.grid && this.handidx >= 0 && this.handidx < this.handtab.length) {
+        if (this.handtab[this.handidx] === -2 && this.btnpen) {
+          this.hand.x = this.btnpen.x + this.btnpen.width / 2 - 20;
+          this.hand.y = this.btnpen.y + this.btnpen.height / 2;
+        } else if (this.handtab[this.handidx] === -3 && this.btncross) {
+          this.hand.x = this.btncross.x + this.btncross.width / 2 - 20;
+          this.hand.y = this.btncross.y + this.btncross.height / 2;
+        } else if (this.handidx + 1 < this.handtab.length) {
+          this.hand.x = this.grid.x + this.handtab[this.handidx] * this.MW + this.MW / 2 - 20;
+          this.hand.y = this.grid.y + this.handtab[this.handidx + 1] * this.MH + this.MH / 2;
+        }
+      }
+
+      this.handf++;
+      if (this.handf === 60) {
+        if (this.handtab[this.handidx] === -2 || this.handtab[this.handidx] === -3 || this.handtab[this.handidx] === -4) this.handidx += 1;
+        else this.handidx += 2;
+        if (this.handtab[this.handidx] === -1 || this.handidx >= this.handtab.length) this.handidx = MAP_NONE;
+        this.handf = 0;
+      }
+
+      if (FlxG.mouse.justPressed()) {
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnpen.x, this.btnpen.y, this.btnpen.width, this.btnpen.height)) { this.tool = MAP_FULL; this.btnpen.frame = 1; this.btncross.frame = 0; this.btnerase.frame = 0; Audio.play(this.sndtool); }
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btncross.x, this.btncross.y, this.btncross.width, this.btncross.height)) { this.tool = MAP_EMPTY; this.btnpen.frame = 0; this.btncross.frame = 1; this.btnerase.frame = 0; Audio.play(this.sndtool); }
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnerase.x, this.btnerase.y, this.btnerase.width, this.btnerase.height) && !this.tutorial) { this.tool = MAP_NONE; this.btnpen.frame = 0; this.btncross.frame = 0; this.btnerase.frame = 1; Audio.play(this.sndtool); }
+      }
+
+      if (FlxG.mouse.justPressed()) {
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnundo.x, this.btnundo.y, this.btnundo.width, this.btnundo.height) && !this.tutorial && this.hasUndo()) this.btnundo.frame = 2;
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnredo.x, this.btnredo.y, this.btnredo.width, this.btnredo.height) && !this.tutorial && this.hasRedo()) this.btnredo.frame = 2;
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnhint.x, this.btnhint.y, this.btnhint.width, this.btnhint.height) && !this.tutorial && this.hintnum > 0) this.btnhint.frame = 1;
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnpause.x, this.btnpause.y, this.btnpause.width, this.btnpause.height)) this.btnpause.frame = 1;
+      }
+
+      if (FlxG.mouse.justReleased()) {
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnundo.x, this.btnundo.y, this.btnundo.width, this.btnundo.height) && !this.tutorial && this.hasUndo()) { this.doUndo(); Audio.play(this.sndback); }
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnredo.x, this.btnredo.y, this.btnredo.width, this.btnredo.height) && !this.tutorial && this.hasRedo()) { this.doRedo(); Audio.play(this.sndfull); }
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnhint.x, this.btnhint.y, this.btnhint.width, this.btnhint.height) && !this.tutorial && this.hintnum > 0) { this.doHint(); if (this.hintnum > 0) this.hintnum--; this.checkclear(); Audio.play(this.sndrowcol); }
+        if (this.overlapgeneral(FlxG.mouse.x, FlxG.mouse.y, 1, 1, this.btnpause.x, this.btnpause.y, this.btnpause.width, this.btnpause.height)) { this.scene = this.SCENE_MENU; Audio.play(this.sndback); }
+      }
+
+      if (!FlxG.mouse.pressed()) {
+        this.btnundo.frame = this.tutorial ? 0 : this.hasUndo() ? 1 : 0;
+        this.btnredo.frame = this.tutorial ? 0 : this.hasRedo() ? 1 : 0;
+        this.btnhint.frame = this.tutorial ? 2 : this.hintnum > 0 ? 0 : 2;
+        this.btnpause.frame = 0;
+      }
+
+      if (FlxG.mouse.pressed()) {
+        const cell = this.cellFromMouse();
+        if (cell) this.applyToolAt(cell.u, cell.v, cell.n, FlxG.mouse.justPressed());
+      }
+
+      if (!FlxG.mouse.pressed() && !FlxG.keys.pressed('SPACE') && this.drawing) {
+        this.drawing = false;
+        this.btnundo.frame = this.tutorial ? 0 : this.hasUndo() ? 1 : 0;
+        this.btnredo.frame = this.tutorial ? 0 : this.hasRedo() ? 1 : 0;
+      }
+
+      if (this.tutorial && this.checkhintclear()) { this.hintidx++; this.sethint(); }
+      this.checkclear();
+
+      if (this.cleared) {
+        this.blank.alpha += 0.01;
+        if (this.blank.alpha >= 1) { this.blank.alpha = 1; this.glossf++; if (this.glossf % 7 === 0) this.gloss = (this.gloss + 1) % 13; }
+        if (this.frame === this.clearf + CLEARWAIT) { this.level = this.level < MAXLEVEL ? this.level + 1 : 2; this.initlevel(); }
+      }
+
+      if (this.penf > 0) this.penf--;
+      if (this.crossf > 0) this.crossf--;
+      if (this.scene === this.SCENE_GAME && !this.cleared) this.timer++;
+      this.frame++;
+    }
+
+    drawPuzzleCells() {
+      const colbase = this.level * this.MU * this.MV;
+      for (let v = 0; v < this.MV; v++) {
+        for (let u = 0; u < this.MU; u++) {
+          const x = this.grid.x + u * this.MW;
+          const y = this.grid.y + v * this.MH;
+          const n = v * this.MU + u;
+          const cell = this.map[n];
+
+          if (cell === MAP_FULL2) Game._drawImage(this.full2, x, y, LEFT | TOP);
+          if (cell === MAP_EMPTY2) Game._drawImage(this.empty2, x, y, LEFT | TOP);
+          if (cell === MAP_FULL) {
+            const sp = this.full;
+            if (!sp.image || !sp.imageLoaded) {
+              ctx.save();
+              ctx.fillStyle = Game.colorToCss(this.colortab[(colbase + n) % this.colortab.length]);
+              ctx.fillRect(x + 8, y + 8, this.MW - 16, this.MH - 16);
+              ctx.restore();
+            } else {
+              sp.frame = 0;
+              Game._drawImage(sp, x, y, LEFT | TOP);
+            }
+          }
+          if (cell === MAP_EMPTY) Game._drawImage(this.empty, x, y, LEFT | TOP);
+
+          if (!this.cleared && u === this.cu && v === this.cv) {
+            Game._drawImage(this.focus, x - 1, y - 1, LEFT | TOP);
+            this.focus3.alpha = 0.5 + Math.sin(this.frame / 10.0) / 2;
+            Game._drawImage(this.focus3, x - 1, y - 1, LEFT | TOP);
+          }
+
+          if (this.cleared) {
+            this.blank.color = this.colortab[colbase + n];
+            Game._drawImage(this.blank, x, y, LEFT | TOP);
+          }
+        }
+      }
+    }
+
+    render2() {
+      ctx.clearRect(0, 0, this.SW, this.SH);
+
+      if (this.issplash) {
+        Game._drawImage(this.splash, 0, 0, LEFT | TOP);
+        Game._drawImage(this.bgred, 0, 0, LEFT | TOP);
+        return;
+      }
+
+      if (this.scene === this.SCENE_MENU) {
+        Game._drawImage(this.bg2, -((this.frame * 1) % this.SW), this.SH, LEFT | BOTTOM);
+        Game._drawImage(this.bg2, -((this.frame * 1) % this.SW) + this.SW, this.SH, LEFT | BOTTOM);
+        this.drawmenu();
+        Game._drawImage(this.ground, -((this.frame * 2) % this.SW), this.SH, LEFT | BOTTOM);
+        Game._drawImage(this.ground, -((this.frame * 2) % this.SW) + this.SW, this.SH, LEFT | BOTTOM);
+        Game._drawImage(this.title, this.SW / 2, 20, HCENTER | TOP);
+        Game._drawImage(this.legal, this.SW / 2, 500, HCENTER | TOP);
+        Game._drawImage(this.btnstart, this.btnstart.x, this.btnstart.y, LEFT | TOP);
+        this.bgm.frame = Audio.mute ? 1 : 0;
+        Game._drawImage(this.bgm, this.bgm.x, this.bgm.y, LEFT | TOP);
+        return;
+      }
+
+      Game._drawImage(this.bg, 0, 0, LEFT | TOP);
+      Game._drawImage(this.grid, this.grid.x, this.grid.y, LEFT | TOP);
+
+      Game._drawImage(this.btnerase, this.btnerase.x, this.btnerase.y, LEFT | TOP);
+      Game._drawImage(this.btncross, this.btncross.x, this.btncross.y, LEFT | TOP);
+      Game._drawImage(this.btnpen, this.btnpen.x, this.btnpen.y, LEFT | TOP);
+      Game._drawImage(this.btnundo, this.btnundo.x, this.btnundo.y, LEFT | TOP);
+      Game._drawImage(this.btnredo, this.btnredo.x, this.btnredo.y, LEFT | TOP);
+      Game._drawImage(this.btnpause, this.btnpause.x, this.btnpause.y, LEFT | TOP);
+      Game._drawImage(this.btnhint, this.btnhint.x, this.btnhint.y, LEFT | TOP);
+
+      this.buttons.frame = 0; Game._drawImage(this.buttons, this.btnpen.x + 4, this.btnpen.y + 4, LEFT | TOP);
+      this.buttons.frame = 1; Game._drawImage(this.buttons, this.btncross.x + 4, this.btncross.y + 4, LEFT | TOP);
+      if (!this.tutorial) {
+        this.buttons.frame = 2; Game._drawImage(this.buttons, this.btnerase.x + 4, this.btnerase.y + 4, LEFT | TOP);
+        this.buttons.frame = 3; Game._drawImage(this.buttons, this.btnhint.x + this.btnhint.width - this.buttons.width + 4, this.btnhint.y + this.btnhint.height - this.buttons.height + 10, LEFT | TOP);
+        this.buttons.frame = 4; Game._drawImage(this.buttons, this.btnundo.x + 4, this.btnundo.y + 4, LEFT | TOP);
+        this.buttons.frame = 5; Game._drawImage(this.buttons, this.btnredo.x + 4, this.btnredo.y + 4, LEFT | TOP);
+      }
+
+      if (!this.cleared) this.drawNonogramNumbers();
+      this.drawPuzzleCells();
+      this.drawClock();
+      this.drawHints();
+
+      let s = '';
+      if (this.tutorial) {
+        if (this.hintidx === 0) s = this.strtab[13];
+        if (this.hintidx === 1) s = this.strtab[14];
+        if (this.hintidx === 2) s = this.strtab[15];
+        if (this.hintidx === 3) s = this.strtab[16];
+        if (this.hintidx === 4) s = this.strtab[17];
+        if (this.hintidx === 5) s = this.strtab[18];
+        if (this.hintidx === 6) s = this.strtab[19];
+        if (this.hintidx === 7) s = this.strtab[20];
+        if (this.hintidx === 8) s = this.strtab[20];
+        if (this.cleared) s = this.strtab[21];
+      } else {
+        s = 'Level ' + this.level;
+      }
+      if (s) this.drawtext2(s, this.grid.x + this.grid.width / 2, this.grid.y + this.grid.height + 50, HCENTER | TOP, 0xffffff);
+
+      if (this.tutorial && !this.cleared && this.hand) {
+        if (this.handtab[this.handidx] === -2 || this.handtab[this.handidx] === -3 || this.handtab[this.handidx] === -4) {
+          if ((this.frame / 15 | 0) % 2 === 0) Game._drawImage(this.hand, this.hand.x, this.hand.y, LEFT | TOP);
+        } else if (this.penf === 0 && this.crossf === 0) {
+          Game._drawImage(this.hand, this.hand.x, this.hand.y, LEFT | TOP);
+        }
+        if (this.penf > 0 && this.btnpen && ((this.frame / 15 | 0) % 2 === 0)) {
+          this.hand.x = this.btnpen.x + this.btnpen.width / 2 - 20;
+          this.hand.y = this.btnpen.y + this.btnpen.height / 2;
+          Game._drawImage(this.hand, this.hand.x, this.hand.y, LEFT | TOP);
+        }
+        if (this.crossf > 0 && this.btncross && ((this.frame / 15 | 0) % 2 === 0)) {
+          this.hand.x = this.btncross.x + this.btncross.width / 2 - 20;
+          this.hand.y = this.btncross.y + this.btncross.height / 2;
+          Game._drawImage(this.hand, this.hand.x, this.hand.y, LEFT | TOP);
+        }
+      }
+
+      if (this.cleared && this.blank.alpha === 1) {
+        for (let v = 0; v < this.MV; v++) {
+          for (let u = 0; u < this.MU; u++) {
+            const x = this.grid.x + u * this.MW;
+            const y = this.grid.y + v * this.MH;
+            if (u === this.gloss && v === this.gloss && this.gloss < this.MU) {
+              this.blank2.color = 0xffffff;
+              this.blank2.alpha = 0.7;
+              Game._drawImage(this.blank2, x, y, LEFT | TOP);
+              const n = this.gloss <= (this.MU / 2 | 0) ? this.gloss : (this.MU - 1 - this.gloss);
+              if (n >= 1) {
+                for (let i = 1; i <= n; i++) {
+                  Game._drawImage(this.blank2, x - this.MW * i, y + this.MH * i, LEFT | TOP);
+                  Game._drawImage(this.blank2, x + this.MW * i, y - this.MH * i, LEFT | TOP);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (this.cleared) {
+        Game._drawImage(this.puzclear, this.grid.x + this.grid.width / 2, this.grid.y - 150, HCENTER | TOP);
+      }
+
+      this.bgm.frame = Audio.mute ? 1 : 0;
+      Game._drawImage(this.bgm, this.bgm.x, this.bgm.y, LEFT | TOP);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Boot.
+  // ---------------------------------------------------------------------------
+  const game = new Game();
+  game.create2();
+
+  // We need beginFrame AFTER processing current frame inputs, so do one-time setup.
+  // Skip rendering until image assets finish loading, so the first frame never draws partial UI.
+  function loop() {
+    game.update2();
+    if (game.areAssetsReady()) {
+      game.render2();
+    } else {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    input.beginFrame();
+    requestAnimationFrame(loop);
+  }
+  input.beginFrame();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
