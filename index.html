@@ -58,6 +58,7 @@
     background: rgba(255,255,255,0.94);
     color: #1f2d3d;
     box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+    cursor: pointer;
   }
   .btn.active {
     background: #1a73e8;
@@ -78,6 +79,7 @@
   .coord { color: #3d4852; }
   #accuracy { color: #667; font-size: 13px; }
   #err { color: #c0392b; font-weight: 600; }
+  #shopCount { color: #2e7d32; font-size: 13px; font-weight: 600; }
   .leaflet-control-container { display: none; }
   .user-dot {
     width: 18px;
@@ -86,6 +88,14 @@
     background: #1a73e8;
     border: 3px solid #fff;
     box-shadow: 0 0 4px rgba(0,0,0,.4);
+  }
+  .shop-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #2e7d32;
+    border: 2px solid #fff;
+    box-shadow: 0 0 4px rgba(0,0,0,.35);
   }
   .leaflet-pane,
   .leaflet-tile,
@@ -108,6 +118,7 @@
   <div id="controls">
     <button id="styleBtn" class="btn active" type="button">Map Style</button>
     <button id="locateBtn" class="btn" type="button">Locate Me</button>
+    <button id="shopsBtn" class="btn active" type="button">Shops</button>
   </div>
 </div>
 
@@ -116,6 +127,7 @@
   <span class="coord" id="lat"></span>
   <span class="coord" id="lng"></span>
   <span id="accuracy"></span>
+  <span id="shopCount"></span>
   <span id="err"></span>
 </div>
 
@@ -127,10 +139,12 @@
   const mapEl = document.getElementById('map');
   const styleBtn = document.getElementById('styleBtn');
   const locateBtn = document.getElementById('locateBtn');
+  const shopsBtn = document.getElementById('shopsBtn');
   const statusEl = document.getElementById('status');
   const latEl = document.getElementById('lat');
   const lngEl = document.getElementById('lng');
   const accuracyEl = document.getElementById('accuracy');
+  const shopCountEl = document.getElementById('shopCount');
   const errEl = document.getElementById('err');
 
   let rotorSize = 0;
@@ -140,6 +154,11 @@
   let marker = null;
   let circle = null;
   let useDefaultStyle = true;
+  let showShops = true;
+
+  let shopMarkers = [];
+  let lastShopFetchLatLng = null;
+  let shopFetchRadius = 500; // metres
 
   let rotateActive = false;
   let startAngleDeg = 0;
@@ -185,6 +204,100 @@
     iconAnchor: [9, 9]
   });
 
+  const shopIcon = L.divIcon({
+    className: '',
+    html: '<div class="shop-dot"></div>',
+    iconSize: [14, 14],
+    iconAnchor: [7, 7]
+  });
+
+  function haversineDistance(lat1, lng1, lat2, lng2) {
+    const R = 6371000;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  function clearShopMarkers() {
+    shopMarkers.forEach(m => map.removeLayer(m));
+    shopMarkers = [];
+  }
+
+  function buildQuery(lat, lng) {
+    const r = shopFetchRadius;
+    return `[out:json][timeout:15];(node["shop"](around:${r},${lat},${lng});node["amenity"~"^(pharmacy|supermarket|convenience)$"](around:${r},${lat},${lng}););out body;`;
+  }
+
+  function renderShops(data, lat, lng) {
+    clearShopMarkers();
+    const elements = data.elements || [];
+    elements.forEach(el => {
+      if (el.lat == null || el.lon == null) return;
+      const name = (el.tags && (el.tags.name || el.tags.shop || el.tags.amenity)) || 'Shop';
+      const m = L.marker([el.lat, el.lon], { icon: shopIcon })
+        .bindTooltip(name, { permanent: false, direction: 'top', offset: [0, -8] });
+      if (showShops) m.addTo(map);
+      shopMarkers.push(m);
+    });
+    shopCountEl.textContent = elements.length
+      ? '🟢 ' + elements.length + ' shops nearby'
+      : 'No shops found nearby';
+    lastShopFetchLatLng = [lat, lng];
+  }
+
+  function fetchShops(lat, lng) {
+    shopCountEl.textContent = 'Loading shops…';
+    const query = buildQuery(lat, lng);
+
+    const endpoints = [
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://overpass.openstreetmap.ru/api/interpreter',
+      'https://overpass-api.de/api/interpreter'
+    ];
+
+    function tryNext(i) {
+      if (i >= endpoints.length) {
+        shopCountEl.textContent = 'Shops unavailable (network error)';
+        return;
+      }
+      const url = endpoints[i] + '?data=' + encodeURIComponent(query);
+      fetch(url)
+        .then(res => {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        })
+        .then(data => renderShops(data, lat, lng))
+        .catch(() => tryNext(i + 1));
+    }
+
+    tryNext(0);
+  }
+
+  function maybeRefetchShops(lat, lng) {
+    if (!showShops) return;
+    if (!lastShopFetchLatLng) {
+      fetchShops(lat, lng);
+      return;
+    }
+    const dist = haversineDistance(lat, lng, lastShopFetchLatLng[0], lastShopFetchLatLng[1]);
+    if (dist > shopFetchRadius * 0.4) {
+      fetchShops(lat, lng);
+    }
+  }
+
+  function toggleShops() {
+    showShops = !showShops;
+    shopsBtn.classList.toggle('active', showShops);
+    if (showShops) {
+      shopMarkers.forEach(m => m.addTo(map));
+      if (userLatLng && !lastShopFetchLatLng) fetchShops(userLatLng[0], userLatLng[1]);
+    } else {
+      shopMarkers.forEach(m => map.removeLayer(m));
+      shopCountEl.textContent = '';
+    }
+  }
+
   function updateStyleButton() {
     styleBtn.classList.toggle('active', useDefaultStyle);
     styleBtn.textContent = useDefaultStyle ? 'Satellite' : 'Default';
@@ -227,7 +340,6 @@
     return Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * 180 / Math.PI;
   }
 
-
   function rotatePoint(x, y, deg) {
     const rad = deg * Math.PI / 180;
     const cos = Math.cos(rad);
@@ -263,6 +375,10 @@
     locateMe();
   });
 
+  shopsBtn.addEventListener('click', function () {
+    toggleShops();
+  });
+
   function onPos(pos) {
     const lat = pos.coords.latitude;
     const lng = pos.coords.longitude;
@@ -294,6 +410,8 @@
       map.setView(userLatLng, 17, { animate: false });
       firstFix = false;
     }
+
+    maybeRefetchShops(lat, lng);
   }
 
   function onErr(e) {
@@ -305,8 +423,6 @@
     statusEl.textContent = 'Error';
     errEl.textContent = msgs[e.code] || 'Unknown error';
   }
-
-
 
   mapEl.addEventListener('pointerdown', function (e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -373,6 +489,16 @@
     rotateActive = false;
     updateDragState();
   }, { passive: true });
+
+  map.on('moveend', function () {
+    if (!showShops) return;
+    const c = map.getCenter();
+    if (!lastShopFetchLatLng) return;
+    const dist = haversineDistance(c.lat, c.lng, lastShopFetchLatLng[0], lastShopFetchLatLng[1]);
+    if (dist > shopFetchRadius * 0.4) {
+      fetchShops(c.lat, c.lng);
+    }
+  });
 
   window.addEventListener('resize', resizeRotor);
   resizeRotor();
