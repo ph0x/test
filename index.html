@@ -1,80 +1,393 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Satellite Map</title>
-
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>GPS Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
-html, body {
-    margin: 0;
-    padding: 0;
-    height: 100%;
-    width: 100%;
-}
-
-#map {
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
     width: 100%;
     height: 100%;
-}
+    overflow: hidden;
+    background: #dfe6ec;
+    font-family: Arial, sans-serif;
+  }
+  body {
+    display: flex;
+    flex-direction: column;
+    touch-action: none;
+  }
+  #mapViewport {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: #dfe6ec;
+  }
+  #mapRotor {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform-origin: center center;
+    will-change: transform;
+  }
+  #map {
+    width: 100%;
+    height: 100%;
+    background: #dfe6ec;
+  }
+  #controls {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 1000;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: calc(100% - 24px);
+  }
+  .btn {
+    border: 0;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 14px;
+    font-weight: 700;
+    background: rgba(255,255,255,0.94);
+    color: #1f2d3d;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+  }
+  .btn.active {
+    background: #1a73e8;
+    color: #fff;
+  }
+  #bar {
+    padding: 10px 14px;
+    background: #fff;
+    border-top: 1px solid #d7dee6;
+    font-size: 14px;
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    flex-wrap: wrap;
+    min-height: 58px;
+  }
+  #status { font-weight: 700; color: #1a73e8; }
+  .coord { color: #3d4852; }
+  #accuracy { color: #667; font-size: 13px; }
+  #err { color: #c0392b; font-weight: 600; }
+  .leaflet-control-container { display: none; }
+  .user-dot {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #1a73e8;
+    border: 3px solid #fff;
+    box-shadow: 0 0 4px rgba(0,0,0,.4);
+  }
+  .leaflet-pane,
+  .leaflet-tile,
+  .leaflet-marker-icon,
+  .leaflet-marker-shadow,
+  .leaflet-overlay-pane svg,
+  .leaflet-overlay-pane canvas {
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+    transform-style: preserve-3d;
+  }
 </style>
 </head>
-
 <body>
 
-<div id="map"></div>
+<div id="mapViewport">
+  <div id="mapRotor">
+    <div id="map"></div>
+  </div>
+  <div id="controls">
+    <button id="styleBtn" class="btn active" type="button">Map Style</button>
+    <button id="locateBtn" class="btn" type="button">Locate Me</button>
+  </div>
+</div>
 
+<div id="bar">
+  <span id="status">Waiting for location…</span>
+  <span class="coord" id="lat"></span>
+  <span class="coord" id="lng"></span>
+  <span id="accuracy"></span>
+  <span id="err"></span>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-    // Check for URL params first (passed from AIR)
-    var params = new URLSearchParams(window.location.search);
-    var urlLat = parseFloat(params.get('lat'));
-    var urlLon = parseFloat(params.get('lon'));
+(function () {
+  const viewport = document.getElementById('mapViewport');
+  const rotor = document.getElementById('mapRotor');
+  const mapEl = document.getElementById('map');
+  const styleBtn = document.getElementById('styleBtn');
+  const locateBtn = document.getElementById('locateBtn');
+  const statusEl = document.getElementById('status');
+  const latEl = document.getElementById('lat');
+  const lngEl = document.getElementById('lng');
+  const accuracyEl = document.getElementById('accuracy');
+  const errEl = document.getElementById('err');
 
-    function initMap() {
-        if (!isNaN(urlLat) && !isNaN(urlLon)) {
-            // Use coordinates from AIR via URL params
-            createMap(urlLat, urlLon);
-        } else {
-            // Fall back to browser Geolocation API
-            if (navigator.geolocation) {
-                navigator.geolocation.getCurrentPosition(
-                    function(pos) {
-                        createMap(pos.coords.latitude, pos.coords.longitude);
-                    },
-                    function(err) {
-                        // Geolocation failed - default to Sofia
-                        createMap(42.6977, 23.3219);
-                    }
-                );
-            } else {
-                createMap(42.6977, 23.3219);
-            }
-        }
+  let rotorSize = 0;
+  let rotationDeg = 0;
+  let firstFix = true;
+  let userLatLng = null;
+  let marker = null;
+  let circle = null;
+  let useDefaultStyle = true;
+
+  let rotateActive = false;
+  let startAngleDeg = 0;
+  let startRotationDeg = 0;
+
+  const map = L.map('map', {
+    zoomControl: false,
+    attributionControl: false,
+    touchZoom: true,
+    doubleClickZoom: true,
+    boxZoom: false,
+    keyboard: true,
+    dragging: false,
+    scrollWheelZoom: true,
+    tap: false,
+    zoomAnimation: true,
+    fadeAnimation: true,
+    markerZoomAnimation: true
+  }).setView([0, 0], 2);
+
+  const defaultTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd',
+    maxZoom: 19,
+    noWrap: false,
+    updateWhenIdle: false,
+    keepBuffer: 6
+  });
+
+  const satelliteTiles = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    noWrap: false,
+    updateWhenIdle: false,
+    keepBuffer: 6,
+    crossOrigin: true
+  });
+
+  defaultTiles.addTo(map);
+
+  const dotIcon = L.divIcon({
+    className: '',
+    html: '<div class="user-dot"></div>',
+    iconSize: [18, 18],
+    iconAnchor: [9, 9]
+  });
+
+  function updateStyleButton() {
+    styleBtn.classList.toggle('active', useDefaultStyle);
+    styleBtn.textContent = useDefaultStyle ? 'Satellite' : 'Default';
+  }
+
+  function applyTiles() {
+    if (useDefaultStyle) {
+      if (map.hasLayer(satelliteTiles)) map.removeLayer(satelliteTiles);
+      if (!map.hasLayer(defaultTiles)) defaultTiles.addTo(map);
+    } else {
+      if (map.hasLayer(defaultTiles)) map.removeLayer(defaultTiles);
+      if (!map.hasLayer(satelliteTiles)) satelliteTiles.addTo(map);
+    }
+    updateStyleButton();
+  }
+
+  function applyRotation() {
+    rotor.style.transform = 'rotate(' + rotationDeg + 'deg)';
+  }
+
+  function resizeRotor() {
+    const w = viewport.clientWidth || window.innerWidth || 1;
+    const h = viewport.clientHeight || 1;
+    rotorSize = Math.ceil(Math.sqrt(w * w + h * h) * 2.25);
+    rotor.style.width = rotorSize + 'px';
+    rotor.style.height = rotorSize + 'px';
+    rotor.style.marginLeft = (-rotorSize / 2) + 'px';
+    rotor.style.marginTop = (-rotorSize / 2) + 'px';
+    applyRotation();
+    map.invalidateSize(false);
+  }
+
+  function locateMe() {
+    if (userLatLng) {
+      map.setView(userLatLng, Math.max(map.getZoom(), 17), { animate: false });
+    }
+  }
+
+  function getTouchAngleDeg(t1, t2) {
+    return Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * 180 / Math.PI;
+  }
+
+
+  function rotatePoint(x, y, deg) {
+    const rad = deg * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    return {
+      x: x * cos - y * sin,
+      y: x * sin + y * cos
+    };
+  }
+
+  const activePointers = new Map();
+  let dragState = null;
+
+  function pointerPos(e) {
+    return { x: e.clientX, y: e.clientY };
+  }
+
+  function updateDragState() {
+    if (activePointers.size === 1 && !rotateActive) {
+      const onlyPointer = Array.from(activePointers.values())[0];
+      dragState = { last: { x: onlyPointer.x, y: onlyPointer.y } };
+    } else {
+      dragState = null;
+    }
+  }
+
+  styleBtn.addEventListener('click', function () {
+    useDefaultStyle = !useDefaultStyle;
+    applyTiles();
+  });
+
+  locateBtn.addEventListener('click', function () {
+    locateMe();
+  });
+
+  function onPos(pos) {
+    const lat = pos.coords.latitude;
+    const lng = pos.coords.longitude;
+    const acc = pos.coords.accuracy;
+    userLatLng = [lat, lng];
+
+    statusEl.textContent = 'Tracking';
+    latEl.textContent = 'Lat: ' + lat.toFixed(6);
+    lngEl.textContent = 'Lng: ' + lng.toFixed(6);
+    accuracyEl.textContent = 'Accuracy: ~' + Math.round(acc) + 'm';
+    errEl.textContent = '';
+
+    if (!marker) {
+      marker = L.marker(userLatLng, { icon: dotIcon }).addTo(map);
+      circle = L.circle(userLatLng, {
+        radius: Math.max(acc, 1),
+        color: '#1a73e8',
+        fillColor: '#1a73e8',
+        fillOpacity: 0.12,
+        weight: 1
+      }).addTo(map);
+    } else {
+      marker.setLatLng(userLatLng);
+      circle.setLatLng(userLatLng);
+      circle.setRadius(Math.max(acc, 1));
     }
 
-    function createMap(lat, lon) {
-        var map = new google.maps.Map(document.getElementById('map'), {
-            center: { lat: lat, lng: lon },
-            zoom: 19,
-            mapTypeId: 'satellite',   // satellite view
-            heading: 0,               // rotation in degrees (0 = north up)
-            tilt: 0,                  // minimal tilt to enable rotation
-            gestureHandling: 'greedy', // single finger pan, two finger rotate/tilt
-            disableDefaultUI: false,
-            rotateControl: true,
-            mapTypeControl: true,
-            fullscreenControl: false
-        });
-
-        // Place marker at location
-        new google.maps.Marker({
-            position: { lat: lat, lng: lon },
-            map: map
-        });
+    if (firstFix) {
+      map.setView(userLatLng, 17, { animate: false });
+      firstFix = false;
     }
+  }
+
+  function onErr(e) {
+    const msgs = {
+      1: 'Permission denied — please allow location access.',
+      2: 'Position unavailable.',
+      3: 'Request timed out.'
+    };
+    statusEl.textContent = 'Error';
+    errEl.textContent = msgs[e.code] || 'Unknown error';
+  }
+
+
+
+  mapEl.addEventListener('pointerdown', function (e) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    activePointers.set(e.pointerId, pointerPos(e));
+    mapEl.setPointerCapture(e.pointerId);
+    updateDragState();
+  });
+
+  mapEl.addEventListener('pointermove', function (e) {
+    if (!activePointers.has(e.pointerId)) return;
+    const p = pointerPos(e);
+    activePointers.set(e.pointerId, p);
+
+    if (!dragState || rotateActive || activePointers.size !== 1) {
+      updateDragState();
+      return;
+    }
+
+    const dx = p.x - dragState.last.x;
+    const dy = p.y - dragState.last.y;
+    dragState.last = p;
+
+    if (dx !== 0 || dy !== 0) {
+      const unrotated = rotatePoint(dx, dy, -rotationDeg);
+      map.panBy(L.point(-unrotated.x, -unrotated.y), { animate: false, noMoveStart: true });
+    }
+  });
+
+  function finishPointer(e) {
+    activePointers.delete(e.pointerId);
+    updateDragState();
+  }
+
+  mapEl.addEventListener('pointerup', finishPointer);
+  mapEl.addEventListener('pointercancel', finishPointer);
+  mapEl.addEventListener('pointerleave', function (e) {
+    if (e.pointerType !== 'mouse') return;
+    finishPointer(e);
+  });
+  mapEl.addEventListener('touchstart', function (e) {
+    if (e.touches.length === 2) {
+      rotateActive = true;
+      startAngleDeg = getTouchAngleDeg(e.touches[0], e.touches[1]);
+      startRotationDeg = rotationDeg;
+      dragState = null;
+    }
+  }, { passive: true });
+
+  mapEl.addEventListener('touchmove', function (e) {
+    if (!rotateActive || e.touches.length !== 2) return;
+    const currentAngleDeg = getTouchAngleDeg(e.touches[0], e.touches[1]);
+    rotationDeg = startRotationDeg + (currentAngleDeg - startAngleDeg);
+    applyRotation();
+  }, { passive: true });
+
+  mapEl.addEventListener('touchend', function (e) {
+    if (e.touches.length < 2) {
+      rotateActive = false;
+      updateDragState();
+    }
+  }, { passive: true });
+
+  mapEl.addEventListener('touchcancel', function () {
+    rotateActive = false;
+    updateDragState();
+  }, { passive: true });
+
+  window.addEventListener('resize', resizeRotor);
+  resizeRotor();
+  updateStyleButton();
+
+  if (!navigator.geolocation) {
+    errEl.textContent = 'Geolocation not supported by this browser.';
+  } else {
+    navigator.geolocation.watchPosition(onPos, onErr, {
+      enableHighAccuracy: true,
+      maximumAge: 1000,
+      timeout: 15000
+    });
+  }
+})();
 </script>
-
-<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCrc3zdPV6WbcgtYuiVrK4O89ylRVtTti0&callback=initMap" async defer></script>
-
 </body>
 </html>
