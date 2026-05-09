@@ -7,105 +7,37 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    background: #dfe6ec;
-    font-family: Arial, sans-serif;
-  }
-  body {
-    display: flex;
-    flex-direction: column;
-    touch-action: none;
-  }
-  #mapViewport {
-    position: relative;
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-    background: #dfe6ec;
-  }
-  #mapRotor {
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    transform-origin: center center;
-    will-change: transform;
-  }
-  #map {
-    width: 100%;
-    height: 100%;
-    background: #dfe6ec;
-  }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #dfe6ec; font-family: Arial, sans-serif; }
+  body { display: flex; flex-direction: column; touch-action: none; }
+  #mapViewport { position: relative; flex: 1; min-height: 0; overflow: hidden; background: #dfe6ec; }
+  #mapRotor { position: absolute; left: 50%; top: 50%; transform-origin: center center; will-change: transform; }
+  #map { width: 100%; height: 100%; background: #dfe6ec; }
   #controls {
-    position: absolute;
-    top: 12px;
-    right: 12px;
-    z-index: 1000;
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    max-width: calc(100% - 24px);
+    position: absolute; top: 12px; right: 12px; z-index: 1000;
+    display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: calc(100% - 24px);
   }
   .btn {
-    border: 0;
-    border-radius: 10px;
-    padding: 10px 14px;
-    font-size: 14px;
-    font-weight: 700;
-    background: rgba(255,255,255,0.94);
-    color: #1f2d3d;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
-    cursor: pointer;
+    border: 0; border-radius: 10px; padding: 10px 14px; font-size: 14px; font-weight: 700;
+    background: rgba(255,255,255,0.94); color: #1f2d3d; box-shadow: 0 2px 8px rgba(0,0,0,0.18); cursor: pointer;
   }
-  .btn.active {
-    background: #1a73e8;
-    color: #fff;
-  }
+  .btn.active { background: #1a73e8; color: #fff; }
   #bar {
-    padding: 10px 14px;
-    background: #fff;
-    border-top: 1px solid #d7dee6;
-    font-size: 14px;
-    display: flex;
-    gap: 14px;
-    align-items: center;
-    flex-wrap: wrap;
-    min-height: 58px;
+    padding: 10px 14px; background: #fff; border-top: 1px solid #d7dee6; font-size: 14px;
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap; min-height: 58px;
   }
   #status { font-weight: 700; color: #1a73e8; }
   .coord { color: #3d4852; }
   #accuracy { color: #667; font-size: 13px; }
   #err { color: #c0392b; font-weight: 600; }
   #shopCount { color: #2e7d32; font-size: 13px; font-weight: 600; }
+  #foodCount { color: #6a1b9a; font-size: 13px; font-weight: 600; }
   .leaflet-control-container { display: none; }
-  .user-dot {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #1a73e8;
-    border: 3px solid #fff;
-    box-shadow: 0 0 4px rgba(0,0,0,.4);
-  }
-  .shop-dot {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: #2e7d32;
-    border: 2px solid #fff;
-    box-shadow: 0 0 4px rgba(0,0,0,.35);
-  }
-  .leaflet-pane,
-  .leaflet-tile,
-  .leaflet-marker-icon,
-  .leaflet-marker-shadow,
-  .leaflet-overlay-pane svg,
-  .leaflet-overlay-pane canvas {
-    backface-visibility: hidden;
-    -webkit-backface-visibility: hidden;
-    transform-style: preserve-3d;
+  .user-dot { width: 18px; height: 18px; border-radius: 50%; background: #1a73e8; border: 3px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,.4); }
+  .shop-dot { width: 14px; height: 14px; border-radius: 50%; background: #2e7d32; border: 2px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,.35); }
+  .food-dot { width: 14px; height: 14px; border-radius: 50%; background: #7b1fa2; border: 2px solid #fff; box-shadow: 0 0 4px rgba(0,0,0,.35); }
+  .leaflet-pane, .leaflet-tile, .leaflet-marker-icon, .leaflet-marker-shadow,
+  .leaflet-overlay-pane svg, .leaflet-overlay-pane canvas {
+    backface-visibility: hidden; -webkit-backface-visibility: hidden; transform-style: preserve-3d;
   }
 </style>
 </head>
@@ -118,7 +50,8 @@
   <div id="controls">
     <button id="styleBtn" class="btn active" type="button">Map Style</button>
     <button id="locateBtn" class="btn" type="button">Locate Me</button>
-    <button id="shopsBtn" class="btn active" type="button">Shops</button>
+    <button id="shopsBtn" class="btn active" type="button">🟢 Shops</button>
+    <button id="foodBtn" class="btn active" type="button">🟣 Food</button>
   </div>
 </div>
 
@@ -128,6 +61,7 @@
   <span class="coord" id="lng"></span>
   <span id="accuracy"></span>
   <span id="shopCount"></span>
+  <span id="foodCount"></span>
   <span id="err"></span>
 </div>
 
@@ -140,11 +74,13 @@
   const styleBtn = document.getElementById('styleBtn');
   const locateBtn = document.getElementById('locateBtn');
   const shopsBtn = document.getElementById('shopsBtn');
+  const foodBtn = document.getElementById('foodBtn');
   const statusEl = document.getElementById('status');
   const latEl = document.getElementById('lat');
   const lngEl = document.getElementById('lng');
   const accuracyEl = document.getElementById('accuracy');
   const shopCountEl = document.getElementById('shopCount');
+  const foodCountEl = document.getElementById('foodCount');
   const errEl = document.getElementById('err');
 
   let rotorSize = 0;
@@ -154,62 +90,44 @@
   let marker = null;
   let circle = null;
   let useDefaultStyle = true;
-  let showShops = true;
 
+  const FETCH_RADIUS = 500;
+  const ENDPOINTS = [
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.openstreetmap.ru/api/interpreter',
+    'https://overpass-api.de/api/interpreter'
+  ];
+
+  let showShops = true;
   let shopMarkers = [];
-  let lastShopFetchLatLng = null;
-  let shopFetchRadius = 500; // metres
+  let lastShopFetch = null;
+
+  let showFood = true;
+  let foodMarkers = [];
+  let lastFoodFetch = null;
 
   let rotateActive = false;
   let startAngleDeg = 0;
   let startRotationDeg = 0;
 
   const map = L.map('map', {
-    zoomControl: false,
-    attributionControl: false,
-    touchZoom: true,
-    doubleClickZoom: true,
-    boxZoom: false,
-    keyboard: true,
-    dragging: false,
-    scrollWheelZoom: true,
-    tap: false,
-    zoomAnimation: true,
-    fadeAnimation: true,
-    markerZoomAnimation: true
+    zoomControl: false, attributionControl: false,
+    touchZoom: true, doubleClickZoom: true, boxZoom: false,
+    keyboard: true, dragging: false, scrollWheelZoom: true,
+    tap: false, zoomAnimation: true, fadeAnimation: true, markerZoomAnimation: true
   }).setView([0, 0], 2);
 
   const defaultTiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    subdomains: 'abcd',
-    maxZoom: 19,
-    noWrap: false,
-    updateWhenIdle: false,
-    keepBuffer: 6
+    subdomains: 'abcd', maxZoom: 19, noWrap: false, updateWhenIdle: false, keepBuffer: 6
   });
-
   const satelliteTiles = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19,
-    noWrap: false,
-    updateWhenIdle: false,
-    keepBuffer: 6,
-    crossOrigin: true
+    maxZoom: 19, noWrap: false, updateWhenIdle: false, keepBuffer: 6, crossOrigin: true
   });
-
   defaultTiles.addTo(map);
 
-  const dotIcon = L.divIcon({
-    className: '',
-    html: '<div class="user-dot"></div>',
-    iconSize: [18, 18],
-    iconAnchor: [9, 9]
-  });
-
-  const shopIcon = L.divIcon({
-    className: '',
-    html: '<div class="shop-dot"></div>',
-    iconSize: [14, 14],
-    iconAnchor: [7, 7]
-  });
+  const dotIcon  = L.divIcon({ className: '', html: '<div class="user-dot"></div>', iconSize: [18,18], iconAnchor: [9,9] });
+  const shopIcon = L.divIcon({ className: '', html: '<div class="shop-dot"></div>', iconSize: [14,14], iconAnchor: [7,7] });
+  const foodIcon = L.divIcon({ className: '', html: '<div class="food-dot"></div>', iconSize: [14,14], iconAnchor: [7,7] });
 
   function haversineDistance(lat1, lng1, lat2, lng2) {
     const R = 6371000;
@@ -219,71 +137,47 @@
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   }
 
-  function clearShopMarkers() {
-    shopMarkers.forEach(m => map.removeLayer(m));
-    shopMarkers = [];
+  function needsRefetch(lastFetch, lat, lng) {
+    if (!lastFetch) return true;
+    return haversineDistance(lat, lng, lastFetch[0], lastFetch[1]) > FETCH_RADIUS * 0.4;
   }
 
-  function buildQuery(lat, lng) {
-    const r = shopFetchRadius;
-    return `[out:json][timeout:15];(node["shop"](around:${r},${lat},${lng});node["amenity"~"^(pharmacy|supermarket|convenience)$"](around:${r},${lat},${lng}););out body;`;
+  function overpassFetch(query, onSuccess, onFail) {
+    function tryNext(i) {
+      if (i >= ENDPOINTS.length) { onFail(); return; }
+      fetch(ENDPOINTS[i] + '?data=' + encodeURIComponent(query))
+        .then(res => { if (!res.ok) throw new Error(); return res.json(); })
+        .then(onSuccess)
+        .catch(() => tryNext(i + 1));
+    }
+    tryNext(0);
   }
 
-  function renderShops(data, lat, lng) {
-    clearShopMarkers();
-    const elements = data.elements || [];
-    elements.forEach(el => {
-      if (el.lat == null || el.lon == null) return;
-      const name = (el.tags && (el.tags.name || el.tags.shop || el.tags.amenity)) || 'Shop';
-      const m = L.marker([el.lat, el.lon], { icon: shopIcon })
-        .bindTooltip(name, { permanent: false, direction: 'top', offset: [0, -8] });
-      if (showShops) m.addTo(map);
-      shopMarkers.push(m);
-    });
-    shopCountEl.textContent = elements.length
-      ? '🟢 ' + elements.length + ' shops nearby'
-      : 'No shops found nearby';
-    lastShopFetchLatLng = [lat, lng];
-  }
+  // ---- SHOPS ----
+  function clearShopMarkers() { shopMarkers.forEach(m => map.removeLayer(m)); shopMarkers = []; }
 
   function fetchShops(lat, lng) {
     shopCountEl.textContent = 'Loading shops…';
-    const query = buildQuery(lat, lng);
-
-    const endpoints = [
-      'https://overpass.kumi.systems/api/interpreter',
-      'https://overpass.openstreetmap.ru/api/interpreter',
-      'https://overpass-api.de/api/interpreter'
-    ];
-
-    function tryNext(i) {
-      if (i >= endpoints.length) {
-        shopCountEl.textContent = 'Shops unavailable (network error)';
-        return;
-      }
-      const url = endpoints[i] + '?data=' + encodeURIComponent(query);
-      fetch(url)
-        .then(res => {
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          return res.json();
-        })
-        .then(data => renderShops(data, lat, lng))
-        .catch(() => tryNext(i + 1));
-    }
-
-    tryNext(0);
+    const q = `[out:json][timeout:15];(node["shop"](around:${FETCH_RADIUS},${lat},${lng});node["amenity"~"^(pharmacy|supermarket|convenience)$"](around:${FETCH_RADIUS},${lat},${lng}););out body;`;
+    overpassFetch(q, data => {
+      clearShopMarkers();
+      const els = data.elements || [];
+      els.forEach(el => {
+        if (el.lat == null || el.lon == null) return;
+        const name = (el.tags && (el.tags.name || el.tags.shop || el.tags.amenity)) || 'Shop';
+        const m = L.marker([el.lat, el.lon], { icon: shopIcon })
+          .bindTooltip(name, { permanent: false, direction: 'top', offset: [0,-8] });
+        if (showShops) m.addTo(map);
+        shopMarkers.push(m);
+      });
+      shopCountEl.textContent = els.length ? '🟢 ' + els.length + ' shops' : 'No shops nearby';
+      lastShopFetch = [lat, lng];
+    }, () => { shopCountEl.textContent = 'Shops unavailable'; });
   }
 
   function maybeRefetchShops(lat, lng) {
     if (!showShops) return;
-    if (!lastShopFetchLatLng) {
-      fetchShops(lat, lng);
-      return;
-    }
-    const dist = haversineDistance(lat, lng, lastShopFetchLatLng[0], lastShopFetchLatLng[1]);
-    if (dist > shopFetchRadius * 0.4) {
-      fetchShops(lat, lng);
-    }
+    if (needsRefetch(lastShopFetch, lat, lng)) fetchShops(lat, lng);
   }
 
   function toggleShops() {
@@ -291,18 +185,57 @@
     shopsBtn.classList.toggle('active', showShops);
     if (showShops) {
       shopMarkers.forEach(m => m.addTo(map));
-      if (userLatLng && !lastShopFetchLatLng) fetchShops(userLatLng[0], userLatLng[1]);
+      if (userLatLng && !lastShopFetch) fetchShops(userLatLng[0], userLatLng[1]);
     } else {
       shopMarkers.forEach(m => map.removeLayer(m));
       shopCountEl.textContent = '';
     }
   }
 
+  // ---- FOOD ----
+  function clearFoodMarkers() { foodMarkers.forEach(m => map.removeLayer(m)); foodMarkers = []; }
+
+  function fetchFood(lat, lng) {
+    foodCountEl.textContent = 'Loading food places…';
+    const q = `[out:json][timeout:15];(node["amenity"~"^(restaurant|cafe|fast_food|bar|pub|food_court|biergarten|ice_cream)$"](around:${FETCH_RADIUS},${lat},${lng}););out body;`;
+    overpassFetch(q, data => {
+      clearFoodMarkers();
+      const els = data.elements || [];
+      els.forEach(el => {
+        if (el.lat == null || el.lon == null) return;
+        const name = (el.tags && (el.tags.name || el.tags.amenity)) || 'Eatery';
+        const m = L.marker([el.lat, el.lon], { icon: foodIcon })
+          .bindTooltip(name, { permanent: false, direction: 'top', offset: [0,-8] });
+        if (showFood) m.addTo(map);
+        foodMarkers.push(m);
+      });
+      foodCountEl.textContent = els.length ? '🟣 ' + els.length + ' food places' : 'No food places nearby';
+      lastFoodFetch = [lat, lng];
+    }, () => { foodCountEl.textContent = 'Food unavailable'; });
+  }
+
+  function maybeRefetchFood(lat, lng) {
+    if (!showFood) return;
+    if (needsRefetch(lastFoodFetch, lat, lng)) fetchFood(lat, lng);
+  }
+
+  function toggleFood() {
+    showFood = !showFood;
+    foodBtn.classList.toggle('active', showFood);
+    if (showFood) {
+      foodMarkers.forEach(m => m.addTo(map));
+      if (userLatLng && !lastFoodFetch) fetchFood(userLatLng[0], userLatLng[1]);
+    } else {
+      foodMarkers.forEach(m => map.removeLayer(m));
+      foodCountEl.textContent = '';
+    }
+  }
+
+  // ---- MAP STYLE ----
   function updateStyleButton() {
     styleBtn.classList.toggle('active', useDefaultStyle);
     styleBtn.textContent = useDefaultStyle ? 'Satellite' : 'Default';
   }
-
   function applyTiles() {
     if (useDefaultStyle) {
       if (map.hasLayer(satelliteTiles)) map.removeLayer(satelliteTiles);
@@ -314,9 +247,7 @@
     updateStyleButton();
   }
 
-  function applyRotation() {
-    rotor.style.transform = 'rotate(' + rotationDeg + 'deg)';
-  }
+  function applyRotation() { rotor.style.transform = 'rotate(' + rotationDeg + 'deg)'; }
 
   function resizeRotor() {
     const w = viewport.clientWidth || window.innerWidth || 1;
@@ -331,60 +262,37 @@
   }
 
   function locateMe() {
-    if (userLatLng) {
-      map.setView(userLatLng, Math.max(map.getZoom(), 17), { animate: false });
-    }
+    if (userLatLng) map.setView(userLatLng, Math.max(map.getZoom(), 17), { animate: false });
   }
 
   function getTouchAngleDeg(t1, t2) {
     return Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * 180 / Math.PI;
   }
-
   function rotatePoint(x, y, deg) {
     const rad = deg * Math.PI / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    return {
-      x: x * cos - y * sin,
-      y: x * sin + y * cos
-    };
+    return { x: x * Math.cos(rad) - y * Math.sin(rad), y: x * Math.sin(rad) + y * Math.cos(rad) };
   }
 
   const activePointers = new Map();
   let dragState = null;
-
-  function pointerPos(e) {
-    return { x: e.clientX, y: e.clientY };
-  }
-
+  function pointerPos(e) { return { x: e.clientX, y: e.clientY }; }
   function updateDragState() {
     if (activePointers.size === 1 && !rotateActive) {
-      const onlyPointer = Array.from(activePointers.values())[0];
-      dragState = { last: { x: onlyPointer.x, y: onlyPointer.y } };
-    } else {
-      dragState = null;
-    }
+      const p = Array.from(activePointers.values())[0];
+      dragState = { last: { x: p.x, y: p.y } };
+    } else { dragState = null; }
   }
 
-  styleBtn.addEventListener('click', function () {
-    useDefaultStyle = !useDefaultStyle;
-    applyTiles();
-  });
-
-  locateBtn.addEventListener('click', function () {
-    locateMe();
-  });
-
-  shopsBtn.addEventListener('click', function () {
-    toggleShops();
-  });
+  styleBtn.addEventListener('click', () => { useDefaultStyle = !useDefaultStyle; applyTiles(); });
+  locateBtn.addEventListener('click', locateMe);
+  shopsBtn.addEventListener('click', toggleShops);
+  foodBtn.addEventListener('click', toggleFood);
 
   function onPos(pos) {
     const lat = pos.coords.latitude;
     const lng = pos.coords.longitude;
     const acc = pos.coords.accuracy;
     userLatLng = [lat, lng];
-
     statusEl.textContent = 'Tracking';
     latEl.textContent = 'Lat: ' + lat.toFixed(6);
     lngEl.textContent = 'Lng: ' + lng.toFixed(6);
@@ -393,13 +301,7 @@
 
     if (!marker) {
       marker = L.marker(userLatLng, { icon: dotIcon }).addTo(map);
-      circle = L.circle(userLatLng, {
-        radius: Math.max(acc, 1),
-        color: '#1a73e8',
-        fillColor: '#1a73e8',
-        fillOpacity: 0.12,
-        weight: 1
-      }).addTo(map);
+      circle = L.circle(userLatLng, { radius: Math.max(acc,1), color:'#1a73e8', fillColor:'#1a73e8', fillOpacity:0.12, weight:1 }).addTo(map);
     } else {
       marker.setLatLng(userLatLng);
       circle.setLatLng(userLatLng);
@@ -412,14 +314,11 @@
     }
 
     maybeRefetchShops(lat, lng);
+    maybeRefetchFood(lat, lng);
   }
 
   function onErr(e) {
-    const msgs = {
-      1: 'Permission denied — please allow location access.',
-      2: 'Position unavailable.',
-      3: 'Request timed out.'
-    };
+    const msgs = { 1: 'Permission denied — please allow location access.', 2: 'Position unavailable.', 3: 'Request timed out.' };
     statusEl.textContent = 'Error';
     errEl.textContent = msgs[e.code] || 'Unknown error';
   }
@@ -435,33 +334,21 @@
     if (!activePointers.has(e.pointerId)) return;
     const p = pointerPos(e);
     activePointers.set(e.pointerId, p);
-
-    if (!dragState || rotateActive || activePointers.size !== 1) {
-      updateDragState();
-      return;
-    }
-
+    if (!dragState || rotateActive || activePointers.size !== 1) { updateDragState(); return; }
     const dx = p.x - dragState.last.x;
     const dy = p.y - dragState.last.y;
     dragState.last = p;
-
     if (dx !== 0 || dy !== 0) {
-      const unrotated = rotatePoint(dx, dy, -rotationDeg);
-      map.panBy(L.point(-unrotated.x, -unrotated.y), { animate: false, noMoveStart: true });
+      const u = rotatePoint(dx, dy, -rotationDeg);
+      map.panBy(L.point(-u.x, -u.y), { animate: false, noMoveStart: true });
     }
   });
 
-  function finishPointer(e) {
-    activePointers.delete(e.pointerId);
-    updateDragState();
-  }
-
+  function finishPointer(e) { activePointers.delete(e.pointerId); updateDragState(); }
   mapEl.addEventListener('pointerup', finishPointer);
   mapEl.addEventListener('pointercancel', finishPointer);
-  mapEl.addEventListener('pointerleave', function (e) {
-    if (e.pointerType !== 'mouse') return;
-    finishPointer(e);
-  });
+  mapEl.addEventListener('pointerleave', function (e) { if (e.pointerType !== 'mouse') return; finishPointer(e); });
+
   mapEl.addEventListener('touchstart', function (e) {
     if (e.touches.length === 2) {
       rotateActive = true;
@@ -473,31 +360,20 @@
 
   mapEl.addEventListener('touchmove', function (e) {
     if (!rotateActive || e.touches.length !== 2) return;
-    const currentAngleDeg = getTouchAngleDeg(e.touches[0], e.touches[1]);
-    rotationDeg = startRotationDeg + (currentAngleDeg - startAngleDeg);
+    rotationDeg = startRotationDeg + (getTouchAngleDeg(e.touches[0], e.touches[1]) - startAngleDeg);
     applyRotation();
   }, { passive: true });
 
   mapEl.addEventListener('touchend', function (e) {
-    if (e.touches.length < 2) {
-      rotateActive = false;
-      updateDragState();
-    }
+    if (e.touches.length < 2) { rotateActive = false; updateDragState(); }
   }, { passive: true });
 
-  mapEl.addEventListener('touchcancel', function () {
-    rotateActive = false;
-    updateDragState();
-  }, { passive: true });
+  mapEl.addEventListener('touchcancel', function () { rotateActive = false; updateDragState(); }, { passive: true });
 
   map.on('moveend', function () {
-    if (!showShops) return;
     const c = map.getCenter();
-    if (!lastShopFetchLatLng) return;
-    const dist = haversineDistance(c.lat, c.lng, lastShopFetchLatLng[0], lastShopFetchLatLng[1]);
-    if (dist > shopFetchRadius * 0.4) {
-      fetchShops(c.lat, c.lng);
-    }
+    maybeRefetchShops(c.lat, c.lng);
+    maybeRefetchFood(c.lat, c.lng);
   });
 
   window.addEventListener('resize', resizeRotor);
@@ -507,11 +383,7 @@
   if (!navigator.geolocation) {
     errEl.textContent = 'Geolocation not supported by this browser.';
   } else {
-    navigator.geolocation.watchPosition(onPos, onErr, {
-      enableHighAccuracy: true,
-      maximumAge: 1000,
-      timeout: 15000
-    });
+    navigator.geolocation.watchPosition(onPos, onErr, { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 });
   }
 })();
 </script>
