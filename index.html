@@ -50,8 +50,8 @@
   <div id="controls">
     <button id="styleBtn" class="btn active" type="button">Map Style</button>
     <button id="locateBtn" class="btn" type="button">Locate Me</button>
-    <button id="shopsBtn" class="btn active" type="button">🟢 Shops</button>
-    <button id="foodBtn" class="btn active" type="button">🟣 Food</button>
+    <button id="shopsBtn" class="btn" type="button">🟢 Shops</button>
+    <button id="foodBtn" class="btn" type="button">🟣 Food</button>
   </div>
 </div>
 
@@ -68,20 +68,20 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (function () {
-  const viewport = document.getElementById('mapViewport');
-  const rotor = document.getElementById('mapRotor');
-  const mapEl = document.getElementById('map');
-  const styleBtn = document.getElementById('styleBtn');
+  const viewport  = document.getElementById('mapViewport');
+  const rotor     = document.getElementById('mapRotor');
+  const mapEl     = document.getElementById('map');
+  const styleBtn  = document.getElementById('styleBtn');
   const locateBtn = document.getElementById('locateBtn');
-  const shopsBtn = document.getElementById('shopsBtn');
-  const foodBtn = document.getElementById('foodBtn');
-  const statusEl = document.getElementById('status');
-  const latEl = document.getElementById('lat');
-  const lngEl = document.getElementById('lng');
-  const accuracyEl = document.getElementById('accuracy');
+  const shopsBtn  = document.getElementById('shopsBtn');
+  const foodBtn   = document.getElementById('foodBtn');
+  const statusEl  = document.getElementById('status');
+  const latEl     = document.getElementById('lat');
+  const lngEl     = document.getElementById('lng');
+  const accuracyEl= document.getElementById('accuracy');
   const shopCountEl = document.getElementById('shopCount');
   const foodCountEl = document.getElementById('foodCount');
-  const errEl = document.getElementById('err');
+  const errEl     = document.getElementById('err');
 
   let rotorSize = 0;
   let rotationDeg = 0;
@@ -98,11 +98,13 @@
     'https://overpass-api.de/api/interpreter'
   ];
 
-  let showShops = true;
+  // shops — off by default
+  let showShops = false;
   let shopMarkers = [];
   let lastShopFetch = null;
 
-  let showFood = true;
+  // food — off by default
+  let showFood = false;
   let foodMarkers = [];
   let lastFoodFetch = null;
 
@@ -110,6 +112,7 @@
   let startAngleDeg = 0;
   let startRotationDeg = 0;
 
+  // ---- MAP SETUP ----
   const map = L.map('map', {
     zoomControl: false, attributionControl: false,
     touchZoom: true, doubleClickZoom: true, boxZoom: false,
@@ -129,6 +132,7 @@
   const shopIcon = L.divIcon({ className: '', html: '<div class="shop-dot"></div>', iconSize: [14,14], iconAnchor: [7,7] });
   const foodIcon = L.divIcon({ className: '', html: '<div class="food-dot"></div>', iconSize: [14,14], iconAnchor: [7,7] });
 
+  // ---- HELPERS ----
   function haversineDistance(lat1, lng1, lat2, lng2) {
     const R = 6371000;
     const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -167,7 +171,7 @@
         const name = (el.tags && (el.tags.name || el.tags.shop || el.tags.amenity)) || 'Shop';
         const m = L.marker([el.lat, el.lon], { icon: shopIcon })
           .bindTooltip(name, { permanent: false, direction: 'top', offset: [0,-8] });
-        if (showShops) m.addTo(map);
+        m.addTo(map);
         shopMarkers.push(m);
       });
       shopCountEl.textContent = els.length ? '🟢 ' + els.length + ' shops' : 'No shops nearby';
@@ -175,20 +179,21 @@
     }, () => { shopCountEl.textContent = 'Shops unavailable'; });
   }
 
-  function maybeRefetchShops(lat, lng) {
-    if (!showShops) return;
-    if (needsRefetch(lastShopFetch, lat, lng)) fetchShops(lat, lng);
-  }
-
   function toggleShops() {
     showShops = !showShops;
     shopsBtn.classList.toggle('active', showShops);
     if (showShops) {
-      shopMarkers.forEach(m => m.addTo(map));
-      if (userLatLng && !lastShopFetch) fetchShops(userLatLng[0], userLatLng[1]);
+      // first activation: fetch around current map center (or user location)
+      const c = firstFix ? null : map.getCenter();
+      if (!c) {
+        shopCountEl.textContent = 'Waiting for location…';
+      } else {
+        fetchShops(c.lat, c.lng);
+      }
     } else {
-      shopMarkers.forEach(m => map.removeLayer(m));
+      clearShopMarkers();
       shopCountEl.textContent = '';
+      lastShopFetch = null;
     }
   }
 
@@ -206,7 +211,7 @@
         const name = (el.tags && (el.tags.name || el.tags.amenity)) || 'Eatery';
         const m = L.marker([el.lat, el.lon], { icon: foodIcon })
           .bindTooltip(name, { permanent: false, direction: 'top', offset: [0,-8] });
-        if (showFood) m.addTo(map);
+        m.addTo(map);
         foodMarkers.push(m);
       });
       foodCountEl.textContent = els.length ? '🟣 ' + els.length + ' food places' : 'No food places nearby';
@@ -214,20 +219,20 @@
     }, () => { foodCountEl.textContent = 'Food unavailable'; });
   }
 
-  function maybeRefetchFood(lat, lng) {
-    if (!showFood) return;
-    if (needsRefetch(lastFoodFetch, lat, lng)) fetchFood(lat, lng);
-  }
-
   function toggleFood() {
     showFood = !showFood;
     foodBtn.classList.toggle('active', showFood);
     if (showFood) {
-      foodMarkers.forEach(m => m.addTo(map));
-      if (userLatLng && !lastFoodFetch) fetchFood(userLatLng[0], userLatLng[1]);
+      const c = firstFix ? null : map.getCenter();
+      if (!c) {
+        foodCountEl.textContent = 'Waiting for location…';
+      } else {
+        fetchFood(c.lat, c.lng);
+      }
     } else {
-      foodMarkers.forEach(m => map.removeLayer(m));
+      clearFoodMarkers();
       foodCountEl.textContent = '';
+      lastFoodFetch = null;
     }
   }
 
@@ -283,11 +288,13 @@
     } else { dragState = null; }
   }
 
+  // ---- BUTTON LISTENERS ----
   styleBtn.addEventListener('click', () => { useDefaultStyle = !useDefaultStyle; applyTiles(); });
   locateBtn.addEventListener('click', locateMe);
   shopsBtn.addEventListener('click', toggleShops);
   foodBtn.addEventListener('click', toggleFood);
 
+  // ---- GPS ----
   function onPos(pos) {
     const lat = pos.coords.latitude;
     const lng = pos.coords.longitude;
@@ -311,10 +318,11 @@
     if (firstFix) {
       map.setView(userLatLng, 17, { animate: false });
       firstFix = false;
+      // if user had already pressed shops/food before GPS arrived, fetch now
+      if (showShops) fetchShops(lat, lng);
+      if (showFood)  fetchFood(lat, lng);
     }
-
-    maybeRefetchShops(lat, lng);
-    maybeRefetchFood(lat, lng);
+    // no automatic reload on GPS updates — only map pan/zoom triggers reloads
   }
 
   function onErr(e) {
@@ -323,6 +331,7 @@
     errEl.textContent = msgs[e.code] || 'Unknown error';
   }
 
+  // ---- POINTER / TOUCH HANDLING ----
   mapEl.addEventListener('pointerdown', function (e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     activePointers.set(e.pointerId, pointerPos(e));
@@ -370,10 +379,12 @@
 
   mapEl.addEventListener('touchcancel', function () { rotateActive = false; updateDragState(); }, { passive: true });
 
+  // ---- MOVEEND: only fires after first GPS fix, only if layer is active ----
   map.on('moveend', function () {
+    if (firstFix) return; // no GPS yet
     const c = map.getCenter();
-    maybeRefetchShops(c.lat, c.lng);
-    maybeRefetchFood(c.lat, c.lng);
+    if (showShops && needsRefetch(lastShopFetch, c.lat, c.lng)) fetchShops(c.lat, c.lng);
+    if (showFood  && needsRefetch(lastFoodFetch,  c.lat, c.lng)) fetchFood(c.lat, c.lng);
   });
 
   window.addEventListener('resize', resizeRotor);
